@@ -52,4 +52,63 @@ class SpotifyTests(unittest.TestCase):
             s.spotify_command({'action':'volume_up'})
         self.assertEqual(calls[-1][2]['volume_percent'],100)
 
+    def test_own_playlist_is_preferred_over_public_namesake(self):
+        with patch.object(s, 'api', return_value={'items': [
+            {'name': 'My Favorites', 'uri': 'spotify:playlist:mine'}]}) as api:
+            self.assertEqual(s.search_uri('playlist', 'My Favorites'),
+                             ('spotify:playlist:mine', 'My Favorites'))
+        self.assertEqual(api.call_args.args[1], '/me/playlists')
+
+    def test_mood_search_plays_playlist_context(self):
+        calls = []
+        def api(method, path, data=None, params=None):
+            calls.append((method, path, data, params))
+            if path == '/search':
+                return {'playlists': {'items': [{'uri': 'spotify:playlist:abc', 'name': 'Sad music'}]}}
+        with patch.object(s, 'device_id', return_value='target'), patch.object(s, 'api', api):
+            result = s.spotify_command({'action': 'play_mood', 'query': 'sad melancholic'})
+        self.assertIn('принял', result)
+        self.assertEqual(calls[-1][2], {'context_uri': 'spotify:playlist:abc'})
+
+    def test_playlist_track_selection_preserves_context_and_page_position(self):
+        calls = []
+        def api(method, path, data=None, params=None):
+            calls.append((method, path, data, params))
+            if path == '/me/player':
+                return {'device': {'id': 'target'}, 'context': {'uri': 'spotify:playlist:abc'}}
+            if path.endswith('/items'):
+                if params['offset'] == 0:
+                    return {'items': [{'item': {'name': 'Other', 'uri': 'spotify:track:x'}}], 'next': 'unused'}
+                return {'items': [{'item': {'name': 'My Song', 'uri': 'spotify:track:y'}}]}
+        with patch.object(s, 'device_id', return_value='target'), patch.object(s, 'api', api):
+            result = s.spotify_command({'action': 'play_from_playlist', 'query': 'My Song'})
+        self.assertIn('принял', result)
+        self.assertEqual(calls[-1][2], {'context_uri': 'spotify:playlist:abc', 'offset': {'position': 1}})
+
+    def test_playlist_missing_song_never_changes_playback(self):
+        with patch.object(s, 'device_id', return_value='target'), patch.object(s, 'api') as api:
+            api.side_effect = [ {'device': {'id': 'target'}, 'context': {'uri': 'spotify:playlist:abc'}}, {'items': []} ]
+            result = s.spotify_command({'action': 'play_from_playlist', 'query': 'missing'})
+        self.assertIn('Не выполнено', result)
+        self.assertTrue(all(call.args[0] == 'GET' for call in api.call_args_list))
+
+    def test_playlist_number_is_one_based_and_invalid_is_rejected(self):
+        with patch.object(s, 'search_uri', return_value=('spotify:playlist:abc', 'Name')):
+            body, _ = s.playlist_selection({'playlist_query': 'Name', 'track_number': 3})
+            self.assertEqual(body['offset'], {'position': 2})
+            for number in [0, -1, True, '3']:
+                with self.assertRaises(s.SpotifyError):
+                    s.playlist_selection({'playlist_query': 'Name', 'track_number': number})
+
+    def test_volume_absolute_and_bad_value(self):
+        def api(method, path, data=None, params=None):
+            if path.endswith('/devices'):
+                return {'devices': [{'id': 'target', 'volume_percent': 50}]}
+        with patch.object(s, 'device_id', return_value='target'), patch.object(s, 'api', side_effect=api) as mocked:
+            result = s.spotify_command({'action': 'set_volume', 'percent': 25})
+            self.assertIn('25%', result)
+            self.assertEqual(mocked.call_args.kwargs['params'], {'device_id': 'target', 'volume_percent': 25})
+            result = s.spotify_command({'action': 'set_volume', 'percent': 101})
+            self.assertIn('Не выполнено', result)
+
 if __name__ == '__main__': unittest.main()

@@ -5,7 +5,7 @@ param(
 $ErrorActionPreference = 'Stop'
 if ($HostIp -notmatch '^[A-Za-z0-9][A-Za-z0-9.-]*$') { throw 'Invalid hostname' }
 $Remote = "tusone@$HostIp"
-$Files = @('gemini_assistant_dialog.py', 'mic_processing.py', 'spotify_api.py', 'slavik-audio', 'slavik-spotify-player', 'start-gemini-assistant.sh', 'install-linux.sh', 'deploy-linux.sh', 'install-spotify-connect.sh', 'requirements.txt', 'README.md', 'tests/test_agent.py', 'tests/test_mic.py', 'tests/test_spotify.py', 'tests/test_connect.py')
+$Files = @('gemini_assistant_dialog.py', 'mic_processing.py', 'spotify_api.py', 'slavik-audio', 'slavik-spotify-player', 'start-gemini-assistant.sh', 'install-linux.sh', 'deploy-linux.sh', 'install-spotify-connect.sh', 'set-output-max.sh', 'requirements.txt', 'README.md', 'tests/test_agent.py', 'tests/test_audio_bridge.py', 'tests/test_mic.py', 'tests/test_spotify.py', 'tests/test_connect.py')
 $Stage = Join-Path ([IO.Path]::GetTempPath()) ('slavik-' + [guid]::NewGuid().ToString('N'))
 $RemoteStage = '.slavik-upload-' + [guid]::NewGuid().ToString('N')
 New-Item -ItemType Directory -Path $Stage | Out-Null

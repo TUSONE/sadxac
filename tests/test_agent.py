@@ -46,9 +46,20 @@ class PCMTests(unittest.TestCase):
         r = a.Resampler(); r.convert(b'x')
         with self.assertRaises(RuntimeError): r.finish()
 
+class VolumeTests(unittest.TestCase):
+    def test_master_volume_uses_fixed_bridge_and_validates_percent(self):
+        with patch('subprocess.run') as run:
+            run.return_value.stdout = 'Общая громкость: 40%.\n'
+            self.assertIn('40%', a.audio_volume({'action': 'set', 'percent': 40}))
+            self.assertEqual(run.call_args.args[0][-2:], ['volume', '40'])
+            run.reset_mock()
+            for invalid in [-1, 101, True, '50']:
+                self.assertIn('Не выполнено', a.audio_volume({'action': 'set', 'percent': invalid}))
+            run.assert_not_called()
+
 class WakeTests(unittest.TestCase):
     def test_wakes_and_background(self):
-        for text in ['Эй Славка!', 'Славик', 'Ебаные славики', 'Ёбаные славики', 'Славуха', 'Hey Slavik']:
+        for text in ['Эй Славка!', 'Славик', 'Ебаные славики', 'Ёбаные славики', 'Славуха', 'Hey Slavik', 'Славка, как дела?', 'Как дела, Славка?', 'Включи, Славка, музыку', 'How are you, Slavka?']:
             self.assertTrue(a.contains_wake(text))
         self.assertFalse(a.contains_wake('обычный разговор о музыке'))
         self.assertFalse(a.contains_wake('славиковский'))
@@ -65,9 +76,9 @@ class WakeTests(unittest.TestCase):
         self.assertFalse(gate.awake)
 
     def test_old_fragments_do_not_wake(self):
-        gate = a.WakeGate(wake_enabled=True); gate.feed_transcript('Эй ')
+        gate = a.WakeGate(wake_enabled=True); gate.feed_transcript('Сла')
         gate.last_input -= 3
-        self.assertFalse(gate.feed_transcript('Славка'))
+        self.assertFalse(gate.feed_transcript('вка'))
 
     def test_continuous_mode_has_no_timeout_or_wake_requirement(self):
         gate = a.WakeGate(wake_enabled=False)

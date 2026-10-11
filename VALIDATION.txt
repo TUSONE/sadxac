@@ -1,9 +1,6 @@
 Local validation: Linux x86_64, Python 3.12.14, google-genai 2.29.0
-34 unittest checks passed: PCM, wake/5s idle timer, delayed command authorization, initial language-hint fallback, microphone DSP/calibration, Spotify PKCE/refresh/command targeting.
-SDK LiveConnectConfig validated, including RU/EN transcription hints and Spotify tool schema.
-Python AST parsing, bash -n, UTF-8 without BOM / LF checks passed.
-Previous pip check passed; no dependency changes.
-Not executed: Windows PowerShell installer, ARMv7 deployment, hardware microphone calibration/AEC, new Gemini language-hint field against live server, Spotify browser login/API playback, Raspotify service installation.
-User previously confirmed base microphone/audio checks and Gemini connection on the board.
-Real OS pipe forwarding tested with synthetic librespot/pacat binaries; existing target librespot backends remain to be inspected on the board.
-Temporary-file creation checked with explicit TMPDIR, including failure without fallback to another directory. Target systemd sandbox and speaker output require revalidation after installation.
+43 unittest checks passed: PCM, wake at any position/5s idle timer, delayed command authorization, initial language-hint fallback, microphone DSP/calibration, Spotify PKCE/refresh/targeting, playlist context selection/pagination, mood playlist lookup, master-volume bridge validation/clamping.
+SDK LiveConnectConfig validated with RU/EN hints, audio_volume and Spotify function declarations.
+Python AST parsing, bash -n and git diff --check passed. No dependency changes.
+User confirmed 48kHz stereo playback and Spotify music on the board before this update.
+Not executed for this update: ARMv7 installation, actual mixer changes, Pulse volume changes, microphone calibration/recognition, live Gemini tool calls, Spotify API playlist selection and OAuth scopes. These require validation on the user's board/account.

@@ -29,7 +29,7 @@ def commands(backends, librespot='/usr/bin/librespot', pacat='/usr/bin/pacat'):
     else:
         raise RuntimeError('librespot has neither pulseaudio nor pipe backend')
     music = [librespot, '--name', 'Slavik', *backend, '--format', 'S16',
-             '--bitrate', '160', '--initial-volume', '35', '--cache', '/var/lib/slavik-spotify']
+             '--bitrate', '160', '--initial-volume', '100', '--cache', '/var/lib/slavik-spotify']
     return music, output
 
 

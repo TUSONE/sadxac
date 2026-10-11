@@ -29,7 +29,7 @@ sudo install -o root -g root -m 755 slavik-audio /usr/local/libexec/slavik-audio
 rules=$(mktemp)
 trap 'rm -f "$rules"' EXIT
 cat > "$rules" <<'RULES'
-tusone ALL=(voice) NOPASSWD: /usr/local/libexec/slavik-audio capture *, /usr/local/libexec/slavik-audio playback *, /usr/local/libexec/slavik-audio check
+tusone ALL=(voice) NOPASSWD: /usr/local/libexec/slavik-audio capture *, /usr/local/libexec/slavik-audio playback *, /usr/local/libexec/slavik-audio check, /usr/local/libexec/slavik-audio volume *
 RULES
 sudo visudo -cf "$rules"
 sudo install -o root -g root -m 440 "$rules" /etc/sudoers.d/slavik-audio

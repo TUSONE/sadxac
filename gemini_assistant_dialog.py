@@ -34,7 +34,7 @@ WAKE_ENABLED = os.getenv("SLAVIK_WAKE_ENABLED", "1") == "1"
 DEBUG_AUDIO = os.getenv("DEBUG_AUDIO", "0") == "1"
 
 WAKE_PATTERNS = [
-    re.compile(r"\bэй\s+славк[ао]\b", re.I),
+    re.compile(r"\b(?:эй\s+)?славк[аоу]\b", re.I),
     re.compile(r"\bславик\b", re.I),
     re.compile(r"\b(?:hey\s+)?slav(?:ik|ka|uha)\b", re.I),
     re.compile(r"\bебан(?:ые|ый|ая)\s+славик(?:и|ов)?\b", re.I),
@@ -59,16 +59,19 @@ def system_instruction():
     language = """Поддерживаемые языки разговора: только русский и английский.
 Распознавай русскую и английскую речь, в том числе с акцентом. По умолчанию
 отвечай по-русски, на явно английскую реплику отвечай по-английски.
-Русские приветствия «салом», «салам», сленг «братуха» и английские названия
+Имена «Славка», «Славик», «Славуха», Slavka, Slavik относятся к тебе;
+не принимай их за слова другого языка. Русские приветствия «салом», «салам», сленг «братуха» и английские названия
 песен не означают переход на третий язык. Не отвечай на других языках.
 Если речь непонятна или на другом языке, попроси повторить по-русски или
 по-английски; не выдумывай услышанное."""
     mode = (
         "Режим пробуждения включён. Правило этого режима имеет приоритет: "
-        "обычно молчи; отвечай после обращения «Эй Славка», «Славик», "
+        "обычно молчи; отвечай после обращения «Славка», «Эй Славка», «Славик», "
         "«Ебаные славики», «Славуха». После обращения поддерживай диалог "
         f"до {AWAKE_SECONDS:g} секунд без повторения имени. После бездействия "
-        "снова молчи до следующего обращения. Не начинай разговор сам."
+        "снова молчи до следующего обращения. Имя может быть в начале, середине "
+        "или конце фразы: «Славка, как дела?» и «Как дела, Славка?» одинаково "
+        "обращены к тебе. Дослушай фразу перед ответом. Не начинай разговор сам."
         if WAKE_ENABLED else
         "Непрерывный диалог включён. Отвечай на обращённую к тебе речь сразу, "
         "без слова пробуждения и без ограничения окна разговора."
@@ -426,7 +429,9 @@ async def tool_worker(session, queue, spotify):
         try:
             if not authorized:
                 result = "Команда отклонена: ассистент спит."
-            elif call.name != "spotify_command":
+            elif call.name == "audio_volume":
+                result = await asyncio.to_thread(audio_volume, dict(call.args or {}))
+            elif call.name != "spotify_command" or spotify is None:
                 result = "Неизвестный инструмент."
             else:
                 try:
@@ -450,7 +455,7 @@ async def run():
         except ImportError:
             raise RuntimeError("SPOTIFY_ENABLED=1 but spotify_api.py/dependencies are missing") from None
     config = make_config(spotify is not None)
-    tool_queue = asyncio.Queue(maxsize=32) if spotify else None
+    tool_queue = asyncio.Queue(maxsize=32)
 
     capture = PulseCapture()
     player = PulsePlayer()
@@ -467,8 +472,7 @@ async def run():
             async with asyncio.TaskGroup() as tg:
                 tg.create_task(microphone_sender(session, capture))
                 tg.create_task(receiver(session, player, gate, tool_queue))
-                if spotify:
-                    tg.create_task(tool_worker(session, tool_queue, spotify))
+                tg.create_task(tool_worker(session, tool_queue, spotify))
                 tg.create_task(player.run())
     finally:
         await capture.close()
@@ -476,7 +480,41 @@ async def run():
         await client.aio.aclose()
 
 
-SPOTIFY_DECLARATIONS = [{'name': 'spotify_command', 'description': 'Управление Spotify по голосовой просьбе. Действия: play_track (включить трек), play_playlist (плейлист), play_artist (музыка исполнителя), radio (радио/похожая музыка), pause, resume, play_pause, next, previous, stop, volume_up, volume_down, status. Для трека/плейлиста/исполнителя передай название в query. Не утверждай, что команда выполнена, пока не получен результат инструмента.', 'parameters': {'type': 'OBJECT', 'properties': {'action': {'type': 'STRING', 'enum': ['play_track', 'play_playlist', 'play_artist', 'radio', 'pause', 'resume', 'play_pause', 'next', 'previous', 'stop', 'volume_up', 'volume_down', 'status']}, 'query': {'type': 'STRING', 'description': 'Название трека, плейлиста или исполнителя'}}, 'required': ['action']}}]
+def audio_volume(args):
+    import subprocess
+    action = args.get("action")
+    value = args.get("percent")
+    if action == "set":
+        if type(value) is not int or not 0 <= value <= 100:
+            return "Не выполнено: громкость должна быть целым числом от 0 до 100%."
+        value = str(value)
+    elif action in ("up", "down"):
+        value = action
+    else:
+        return "Не выполнено: неизвестная команда громкости."
+    try:
+        result = subprocess.run(
+            ["sudo", "-n", "-H", "-u", "voice",
+             os.getenv("SLAVIK_AUDIO_HELPER", "/usr/local/libexec/slavik-audio"), "volume", value],
+            capture_output=True, text=True, timeout=5, check=True)
+        return result.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return "Не выполнено: обновите аудиомост через bash install-linux.sh."
+
+
+AUDIO_DECLARATIONS = [{"name": "audio_volume",
+    "description": "Общая громкость колонки: музыка и голос Славика. Громче/тише: up/down на 10 процентов; set с percent от 0 до 100. Используй для обычных просьб о громкости.",
+    "parameters": {"type": "OBJECT", "properties": {
+        "action": {"type": "STRING", "enum": ["up", "down", "set"]},
+        "percent": {"type": "INTEGER", "description": "Абсолютная громкость 0..100 для set"}}, "required": ["action"]}}]
+SPOTIFY_DECLARATIONS = [{"name": "spotify_command",
+    "description": "Spotify: следующий/предыдущий трек next/previous, pause/resume/play_pause/stop; play_track по названию; play_playlist по названию; play_artist; play_mood для настроения (например грустная музыка: query sad songs). play_from_playlist выбирает трек в текущем плейлисте по query или номеру track_number (от 1); playlist_query выбирает другой плейлист. volume_up/down/set_volume меняют только музыку Spotify. Не утверждай успех до результата инструмента.",
+    "parameters": {"type": "OBJECT", "properties": {
+        "action": {"type": "STRING", "enum": ["play_track", "play_playlist", "play_artist", "play_mood", "play_from_playlist", "pause", "resume", "play_pause", "next", "previous", "stop", "volume_up", "volume_down", "set_volume", "status"]},
+        "query": {"type": "STRING", "description": "Название песни, плейлиста, исполнителя или запрос плейлиста по настроению"},
+        "playlist_query": {"type": "STRING", "description": "Название плейлиста; без него используется текущий"},
+        "track_number": {"type": "INTEGER", "description": "Номер трека в плейлисте от 1"},
+        "percent": {"type": "INTEGER", "description": "Громкость Spotify 0..100 для set_volume"}}, "required": ["action"]}}]
 
 @asynccontextmanager
 async def connect_live(client, config):
@@ -500,11 +538,11 @@ def make_config(enable_spotify=False):
     from google.genai import types
     return types.LiveConnectConfig(
         response_modalities=[types.Modality.AUDIO],
-        system_instruction=system_instruction() + (
-            " Для музыкальных просьб используй spotify_command; сообщай об успехе только по результату инструмента."
+        system_instruction=system_instruction() + " Для управления общей громкостью используй audio_volume; сообщай результат только после инструмента." + (
+            " Для музыкальных просьб используй spotify_command; настроение превращай в конкретный запрос плейлиста. Для выбора другой песни из текущего плейлиста используй play_from_playlist, чтобы сохранить очередь. Сообщай об успехе только по результату инструмента."
             if enable_spotify else " Управление Spotify сейчас недоступно; не заявляй, что включил музыку."
         ),
-        tools=[types.Tool(function_declarations=SPOTIFY_DECLARATIONS)] if enable_spotify else None,
+        tools=[types.Tool(function_declarations=AUDIO_DECLARATIONS + (SPOTIFY_DECLARATIONS if enable_spotify else []))],
         speech_config=types.SpeechConfig(
             voice_config=types.VoiceConfig(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=VOICE)
@@ -520,8 +558,8 @@ def make_config(enable_spotify=False):
                 disabled=False,
                 start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_LOW,
                 end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_LOW,
-                prefix_padding_ms=320,
-                silence_duration_ms=500,
+                prefix_padding_ms=500,
+                silence_duration_ms=700,
             ),
             activity_handling=types.ActivityHandling.START_OF_ACTIVITY_INTERRUPTS,
             turn_coverage=types.TurnCoverage.TURN_INCLUDES_ONLY_ACTIVITY,

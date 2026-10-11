@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import tempfile
 import time
@@ -16,7 +17,7 @@ from pathlib import Path
 
 API = 'https://api.spotify.com/v1'
 TOKEN_URL = 'https://accounts.spotify.com/api/token'
-SCOPES = 'user-read-playback-state user-modify-playback-state user-read-currently-playing'
+SCOPES = 'user-read-playback-state user-modify-playback-state user-read-currently-playing playlist-read-private playlist-read-collaborative'
 
 
 class SpotifyError(RuntimeError):
@@ -175,11 +176,95 @@ def device_id():
 def search_uri(kind, query):
     if not isinstance(query, str) or not query.strip() or len(query) > 300:
         raise SpotifyError('Нужно название трека, исполнителя или плейлиста.')
+    if kind == 'playlist':
+        # Prefer the user's saved playlists over an unrelated public namesake.
+        matches = []
+        offset = 0
+        while offset < 500:
+            try:
+                page = api('GET', '/me/playlists', params={'limit': 50, 'offset': offset}) or {}
+            except SpotifyError as error:
+                if str(error) != 'Spotify HTTP 403':
+                    raise
+                break  # existing tokens may lack the new playlist-read scopes
+            items = page.get('items', [])
+            for item in items:
+                if not item or not item.get('uri'):
+                    continue
+                name = item.get('name', '')
+                if name.casefold() == query.strip().casefold():
+                    return item['uri'], name
+                if query.strip().casefold() in name.casefold():
+                    matches.append((item['uri'], name))
+            offset += len(items)
+            if not items or not page.get('next'):
+                break
+        if len(matches) == 1:
+            return matches[0]
     result = api('GET', '/search', params={'q': query, 'type': kind, 'limit': 1}) or {}
     items = result.get(kind + 's', {}).get('items', [])
     if not items or not items[0] or not items[0].get('uri'):
         raise SpotifyError('Spotify ничего не нашёл по этому запросу.')
     return items[0]['uri'], items[0].get('name', query)
+
+
+def playlist_selection(args):
+    """Retain playlist context instead of replacing its queue with a single URI."""
+    if args.get('playlist_query'):
+        uri, _ = search_uri('playlist', args['playlist_query'])
+    else:
+        current = api('GET', '/me/player') or {}
+        if (current.get('device') or {}).get('id') != device_id():
+            raise SpotifyError('На Slavik нет активного плейлиста. Назовите плейлист.')
+        uri = (current.get('context') or {}).get('uri', '')
+    if not re.fullmatch(r'spotify:playlist:[A-Za-z0-9]+', uri):
+        raise SpotifyError('Сейчас играет не плейлист. Назовите плейлист для выбора трека.')
+    number = args.get('track_number')
+    if number is not None:
+        if type(number) is not int or number < 1:
+            raise SpotifyError('Номер трека должен быть целым числом от 1.')
+        return {'context_uri': uri, 'offset': {'position': number - 1}}, f'трек {number}'
+    query = args.get('query')
+    if not isinstance(query, str) or not query.strip():
+        raise SpotifyError('Назовите песню или номер трека в плейлисте.')
+    def norm(text):
+        return re.sub(r'[^\w]+', ' ', text.casefold()).strip()
+    target = norm(query)
+    if not target:
+        raise SpotifyError('Нужно название песни.')
+    identifier = uri.rsplit(':', 1)[1]
+    endpoint = f'/playlists/{identifier}/items'
+    matches = []
+    offset = 0
+    while True:
+        try:
+            page = api('GET', endpoint, params={'limit': 50, 'offset': offset}) or {}
+        except SpotifyError as error:
+            # Older Spotify versions expose the same collection as /tracks.
+            if str(error) != 'Spotify HTTP 404' or not endpoint.endswith('/items'):
+                raise
+            endpoint = f'/playlists/{identifier}/tracks'
+            page = api('GET', endpoint, params={'limit': 50, 'offset': offset}) or {}
+        entries = page.get('items', [])
+        for index, entry in enumerate(entries):
+            track = (entry or {}).get('item') or (entry or {}).get('track') or {}
+            if not track.get('uri') or track.get('is_local') or track.get('is_playable') is False:
+                continue
+            name = track.get('name', '')
+            full = name + ' ' + ' '.join(a.get('name', '') for a in track.get('artists', []))
+            if target == norm(name):
+                return {'context_uri': uri, 'offset': {'position': offset + index}}, name
+            if target in norm(full):
+                matches.append((offset + index, name))
+        offset += len(entries)
+        if not entries or not page.get('next'):
+            break
+        if offset >= 1000:
+            raise SpotifyError('Плейлист большой: назовите номер трека или более точное название.')
+    if len(matches) != 1:
+        raise SpotifyError('Трек не найден однозначно в плейлисте. Уточните название или номер.')
+    position, name = matches[0]
+    return {'context_uri': uri, 'offset': {'position': position}}, name
 
 
 def spotify_command(args):
@@ -189,11 +274,18 @@ def spotify_command(args):
             names = [d.get('name', '?') for d in devices()]
             return 'Устройства Spotify: ' + (', '.join(names) or 'нет; выберите Slavik в приложении Spotify')
         supported = {'play_track', 'play_artist', 'play_playlist', 'pause', 'stop', 'resume',
-                     'play_pause', 'next', 'previous', 'volume_up', 'volume_down'}
+                     'play_pause', 'next', 'previous', 'volume_up', 'volume_down',
+                     'set_volume', 'play_mood', 'play_from_playlist'}
         if action not in supported:
             return 'Эта команда не поддерживается. Можно включить трек, исполнителя, плейлист или управлять воспроизведением.'
         selected = device_id()
         params = {'device_id': selected}
+        if action == 'play_from_playlist':
+            body, name = playlist_selection(args)
+            api('PUT', '/me/player/play', body, params)
+            return f'Spotify принял выбор в плейлисте: {name}.'
+        if action == 'play_mood':
+            action = 'play_playlist'
         if action in ('play_track', 'play_artist', 'play_playlist'):
             kind = {'play_track': 'track', 'play_artist': 'artist', 'play_playlist': 'playlist'}[action]
             uri, name = search_uri(kind, args.get('query'))
@@ -204,11 +296,18 @@ def spotify_command(args):
             if (current.get('device') or {}).get('id') != selected:
                 raise SpotifyError('Выбранное устройство не активно. Сначала включите на нём трек.')
             action = 'pause' if current.get('is_playing') else 'resume'
-        if action in ('volume_up', 'volume_down'):
-            current = next(d for d in devices() if d.get('id') == selected)
+        if action in ('volume_up', 'volume_down', 'set_volume'):
+            current = next((d for d in devices() if d.get('id') == selected), None)
+            if current is None:
+                raise SpotifyError('Slavik отключился; повторите команду.')
             if current.get('supports_volume') is False or current.get('volume_percent') is None:
                 raise SpotifyError('Это устройство не поддерживает регулировку громкости через Spotify.')
-            amount = max(0, min(100, current['volume_percent'] + (10 if action == 'volume_up' else -10)))
+            if action == 'set_volume':
+                amount = args.get('percent')
+                if type(amount) is not int or not 0 <= amount <= 100:
+                    raise SpotifyError('Громкость должна быть целым числом от 0 до 100%.')
+            else:
+                amount = max(0, min(100, current['volume_percent'] + (10 if action == 'volume_up' else -10)))
             api('PUT', '/me/player/volume', params={**params, 'volume_percent': amount})
             return f'Spotify принял громкость {amount}%.'
         method, path = {
