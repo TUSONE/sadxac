@@ -51,6 +51,9 @@ User=voice
 Group=$(id -gn voice)
 Environment=XDG_RUNTIME_DIR=/run/user/$voice_uid
 Environment=PULSE_SERVER=unix:/run/user/$voice_uid/pulse/native
+Environment=TMPDIR=/run/slavik-spotify
+RuntimeDirectory=slavik-spotify
+RuntimeDirectoryMode=0700
 StateDirectory=slavik-spotify
 StateDirectoryMode=0700
 UMask=0077

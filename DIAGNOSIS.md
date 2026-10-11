@@ -65,3 +65,14 @@ librespot decoded S16 stereo 44100 → pacat → voice_aec_sink, запуск о
 процессов от voice и согласованное завершение. Проверена передача настоящими
 subprocess pipe на тестовых исполняемых файлах; реальная сборка/плеер на плате
 ещё не проверены. Пользователь подтвердил Spotify OAuth и список старых устройств.
+
+## Подтверждённая причина пропуска треков
+
+Лог платы показал ReadOnlyFilesystem при создании /tmp/.tmp* в librespot.
+ProtectSystem=strict без writable scratch делал /tmp read-only внутри службы.
+Добавлены RuntimeDirectory=slavik-spotify и TMPDIR=/run/slavik-spotify; systemd
+создаёт writable каталог пользователя voice с mode 0700 и убирает после stop.
+Supervisor проверяет создание/запись временного файла перед запуском плеера,
+чтобы ошибка не маскировалась активной службой и бесконечным skip-loop.
+Отсутствие звука в Gemini --audio-test требует отдельной диагностики sink/mixer:
+в переданном логе нет сведений о mute, громкости или физическом выходе.

@@ -199,7 +199,10 @@ next/previous, volume ±10%. `radio` не реализовано и возвра
    pipe и передаёт decoded PCM16 44.1 кГц stereo в pacat → voice_aec_sink.
    Пересборка librespot не нужна, если есть хотя бы pulseaudio или pipe.
    Root-owned помощник `/usr/local/libexec/slavik-spotify-player` следит за обоими
-   процессами и завершает их при остановке службы. Pulse выполняет преобразование
+   процессами и завершает их при остановке службы. Временные файлы треков
+   идут в writable `/run/slavik-spotify` (RuntimeDirectory, mode 0700),
+   чтобы ProtectSystem=strict не блокировал запись в /tmp. Перед запуском
+   проверяется создание временного файла. Pulse выполняет преобразование
    частоты музыкального потока для AEC; формат аудио Gemini не меняется.
    Он отключает пакетную службу raspotify и создаёт отдельную `slavik-spotify`
    от `voice`, выход — `voice_aec_sink`. Конфигурация Gemini/AEC не меняется.

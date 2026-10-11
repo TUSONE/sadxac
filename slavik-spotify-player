@@ -1,6 +1,8 @@
 #!/usr/bin/python3
 """Root-owned voice service supervisor. Supports native Pulse or PCM pipe fallback."""
 import re
+import os
+import tempfile
 import signal
 import subprocess
 import sys
@@ -41,7 +43,20 @@ def stop(proc):
             proc.wait()
 
 
+def check_temp_directory():
+    # Explicit dir prevents tempfile from hiding a broken TMPDIR by falling back.
+    directory = os.getenv('TMPDIR')
+    try:
+        with tempfile.TemporaryFile(dir=directory) as scratch:
+            scratch.write(b'slavik-temp-check')
+            scratch.flush()
+    except OSError as error:
+        raise RuntimeError(f'Spotify temporary directory not writable (errno={error.errno}); '
+                           'check TMPDIR and RuntimeDirectory in slavik-spotify.service') from None
+
+
 def run_player(librespot='/usr/bin/librespot', pacat='/usr/bin/pacat'):
+    check_temp_directory()
     music, output = commands(available_backends(librespot), librespot, pacat)
     print('Spotify audio: ' + ('pipe PCM16/44100/stereo -> pacat -> AEC' if output else
                                'native pulseaudio -> AEC'), flush=True)
@@ -82,5 +97,6 @@ if __name__ == '__main__':
         raise SystemExit(run_player())
     except (RuntimeError, OSError, subprocess.SubprocessError) as error:
         # No OAuth tokens or API responses are handled here.
-        print(f'Spotify player failed: {type(error).__name__}. Check installed backends and Pulse.', file=sys.stderr)
+        print(str(error) if type(error) is RuntimeError else
+              f'Spotify player failed: {type(error).__name__}. Check installed backends and Pulse.', file=sys.stderr)
         raise SystemExit(1)
