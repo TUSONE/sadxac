@@ -57,6 +57,33 @@ class FocusTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(gate.awake)
 
 
+    async def test_duck_requires_address_and_restores_after_window(self):
+        gate = agent.WakeGate()
+        player = SimpleNamespace(queue=asyncio.Queue(), audio_until=0)
+        writes = []
+        stdin = SimpleNamespace(write=writes.append, drain=AsyncMock(), close=lambda: None)
+        proc = SimpleNamespace(stdin=stdin, returncode=None, wait=AsyncMock(return_value=0))
+        count = 0
+        async def tick(_):
+            nonlocal count
+            count += 1
+            if count == 1:
+                gate.feed_transcript('Славик, привет')
+            elif count == 2:
+                gate.awake_until = 0
+                gate.command_authorized = False
+            else:
+                raise asyncio.CancelledError
+        capture = SimpleNamespace(near_speech=SimpleNamespace(until=1e30))
+        with patch.dict(agent.os.environ, {'SLAVIK_MUSIC_DUCK': '1', 'SLAVIK_AUDIO_HELPER': '/test', 'SLAVIK_EARLY_DUCK': '1'}), \
+             patch.object(agent.asyncio, 'create_subprocess_exec', new=AsyncMock(return_value=proc)), \
+             patch.object(agent.asyncio, 'sleep', side_effect=tick):
+            with self.assertRaises(asyncio.CancelledError):
+                await agent.conversation_focus(gate, player, capture)
+        self.assertEqual(writes, [b'off\n', b'on\n', b'off\n'])
+        self.assertFalse(gate.addressed)
+
+
 class ServiceTests(unittest.TestCase):
     def test_eof_restores_music_after_active_session(self):
         import json

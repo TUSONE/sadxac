@@ -42,3 +42,8 @@ Stabilization: 66 tests passed. Experimental model wake, duck and early duck def
 Disabled wake is absent from the schema and cannot authorize injected calls. Explicit local
 recording verified for right-channel samples, 16k mono WAV duration and 0600 permissions.
 Board recording, echo cause and playback artifact resolution remain unverified.
+
+68 tests pass: idle interruption retains the Pulse process, active interruption still
+flushes a blocked writer, duck requires explicit address and restores after window even
+when a legacy early-duck flag and simulated noise cue are present. trace-audio.sh bash
+syntax checked; actual pw-top capture and music dropout resolution require board data.

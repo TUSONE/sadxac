@@ -9,7 +9,7 @@ import argparse
 import math
 import signal
 from contextlib import AsyncExitStack, asynccontextmanager
-from mic_processing import load_processor, NearSpeech
+from mic_processing import load_processor
 from array import array
 
 
@@ -223,6 +223,7 @@ class WakeGate:
         if AWAKE_SECONDS <= 0:
             raise ValueError("SLAVIK_AWAKE_SECONDS must be positive")
         self.awake_until = 0.0
+        self.addressed = False
         self.input_buf = ""
         self.command_authorized = False
 
@@ -252,6 +253,7 @@ class WakeGate:
         self.last_input = now
         self.input_buf = (self.input_buf + text)[-300:]
         if contains_wake(text) or contains_wake(self.input_buf):
+            self.addressed = True
             self.command_authorized = True
             was_asleep = not self.awake
             self.extend()
@@ -270,7 +272,6 @@ class PulseCapture:
     def __init__(self, processed=True):
         self.proc = None
         self.processor = load_processor(MIC_SOURCE) if processed else None
-        self.near_speech = NearSpeech()
 
     async def start(self):
         self.proc = await asyncio.create_subprocess_exec(
@@ -294,7 +295,6 @@ class PulseCapture:
 
     async def read_mono(self) -> bytes:
         mono = stereo_to_mono_channel(await self.read_stereo(), INPUT_SELECTED_CHANNEL)
-        self.near_speech.feed(mono, time.monotonic())
         return self.processor.process(mono) if self.processor else mono
 
     async def close(self):
@@ -360,13 +360,17 @@ class PulsePlayer:
         self.enqueue(self.resampler.finish())
 
     async def flush(self):
-        # No drain lock: kill playback before waiting for a blocked writer.
+        # Idle server interruptions must not destroy/recreate a Pulse stream.
+        # Active audio still requires flushing the hardware/server buffer.
+        active = not self.queue.empty() or time.monotonic() < self.audio_until + .12
         self.generation += 1
         self.audio_until = 0.0
         self.resampler.reset()
         while not self.queue.empty():
             self.queue.get_nowait()
             self.queue.task_done()
+        if not active:
+            return
         old, self.proc = self.proc, None
         await stop_process(old)
         # Recreated lazily by the single writer, after its old drain exits.
@@ -407,7 +411,7 @@ async def conversation_focus(gate, player, capture=None):
     proc = None
     last_active = None
     try:
-        if os.getenv("SLAVIK_MUSIC_DUCK", "0") == "1" and os.getenv("SLAVIK_AUDIO_HELPER"):
+        if os.getenv("SLAVIK_MUSIC_DUCK", "1") == "1" and os.getenv("SLAVIK_AUDIO_HELPER"):
             proc = await asyncio.create_subprocess_exec(
                 "sudo", "-n", "-H", "-u", "voice", os.environ["SLAVIK_AUDIO_HELPER"], "duck",
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.DEVNULL,
@@ -416,9 +420,9 @@ async def conversation_focus(gate, player, capture=None):
             busy = not player.queue.empty() or time.monotonic() < player.audio_until + .12
             if busy:
                 gate.extend()
-            near = (os.getenv("SLAVIK_EARLY_DUCK", "0") == "1" and capture is not None
-                    and time.monotonic() < capture.near_speech.until)
-            active = gate.awake or busy or near
+            if not gate.response_allowed and not busy:
+                gate.addressed = False
+            active = gate.addressed and (gate.response_allowed or busy)
             if proc and proc.returncode is not None:
                 print('[Audio] Приглушение недоступно: обновите аудиомост через bash install-linux.sh.', flush=True)
                 proc = None
@@ -480,6 +484,7 @@ async def receiver(session, player, gate, tool_queue=None):
                 # never bypasses the sleeping gate.
                 for call in calls:
                     if audio_wake_enabled() and call.name == "wake_assistant" and (call.args or {}).get("addressed") is True:
+                        gate.addressed = True
                         gate.extend()
                         gate.command_authorized = True
                         print("[Славик активирован по аудио]", flush=True)

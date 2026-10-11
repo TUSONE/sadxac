@@ -305,6 +305,16 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(session, 'session')
         self.assertEqual(calls, [['ru-RU', 'en-US'], None])
 
+    async def test_idle_interrupt_preserves_pulse_stream(self):
+        player = a.PulsePlayer()
+        proc = NS(returncode=None)
+        player.proc = proc
+        with patch.object(a, 'stop_process') as stop:
+            await player.flush()
+        self.assertIs(player.proc, proc)
+        stop.assert_not_called()
+        self.assertEqual(player.generation, 1)
+
     async def test_flush_does_not_wait_for_blocked_writer(self):
         player = a.PulsePlayer()
         drained = asyncio.Event()
