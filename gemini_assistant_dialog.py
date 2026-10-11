@@ -675,7 +675,7 @@ async def entry(args):
         if args.diagnose:
             from audio_diagnostics import print_diagnostics
             await asyncio.to_thread(print_diagnostics)
-        elif args.spotify_login or args.spotify_status or args.spotify_next or args.spotify_previous:
+        elif args.spotify_login or args.spotify_status or args.spotify_next or args.spotify_previous or args.spotify_playlist_track is not None:
             from spotify_api import login, spotify_command
             if args.spotify_login:
                 import threading
@@ -685,8 +685,11 @@ async def entry(args):
                 finally:
                     stopped.set()
             else:
-                action = "next" if args.spotify_next else "previous" if args.spotify_previous else "status"
-                result = await asyncio.to_thread(spotify_command, {"action": action})
+                action = "play_from_playlist" if args.spotify_playlist_track is not None else "next" if args.spotify_next else "previous" if args.spotify_previous else "status"
+                request = {"action": action}
+                if args.spotify_playlist_track is not None:
+                    request["track_number"] = args.spotify_playlist_track
+                result = await asyncio.to_thread(spotify_command, request)
                 if result.startswith("Не выполнено:"):
                     raise RuntimeError(result)
                 print(result)
@@ -710,6 +713,7 @@ def main():
     modes.add_argument("--spotify-status", action="store_true")
     modes.add_argument("--spotify-next", action="store_true")
     modes.add_argument("--spotify-previous", action="store_true")
+    modes.add_argument("--spotify-playlist-track", type=int, metavar="NUMBER")
     args = parser.parse_args()
     try:
         asyncio.run(entry(args))

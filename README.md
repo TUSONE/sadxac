@@ -446,3 +446,32 @@ SLAVIK_DEBUG_EVENTS=1 ./start-gemini-assistant.sh
 получение/выполнение команд инструментов. Снимок --diagnose во втором SSH-терминале
 во время ответа покажет действующие sink-inputs/source-outputs. Печать событий
 помогает сопоставить сбой, но сама по себе не измеряет эффективность AEC.
+
+Если выбор любой песни запускает первую в плейлисте, включите ограниченный
+debug Connect (перезапускает только slavik-spotify; кэш и авторизация сохраняются):
+
+```bash
+bash spotify-connect-debug.sh on
+```
+
+Заново выберите Slavik в приложении, включите плейлист и нажмите третью песню.
+Затем проверьте явную позицию через API:
+
+```bash
+./start-gemini-assistant.sh --spotify-playlist-track 3
+./start-gemini-assistant.sh --spotify-status
+sudo journalctl -u slavik-spotify --since '3 minutes ago' --no-pager
+```
+
+Команда требует активный плейлист на выбранном устройстве и отправляет
+context_uri с offset.position=2; она действительно меняет воспроизведение.
+Журнал Connect содержит цели URI/UID/индекса, позволяя проверить fallback на 0.
+Режим не включает подробные логи OAuth/session/dealer, но содержит музыкальный
+контекст. После проверки выключите подробный журнал:
+
+```bash
+bash spotify-connect-debug.sh off
+```
+
+При таймауте API команда могла дойти до сервера. Сначала посмотрите статус;
+автоматическое повторение next может переключить две песни вместо одной.

@@ -37,6 +37,12 @@ class SpotifyTests(unittest.TestCase):
         with patch.object(s,'device_id',return_value='target'), patch.object(s,'api',side_effect=s.SpotifyError('Spotify HTTP 403')):
             self.assertIn('запретил',s.spotify_command({'action':'play_track','query':'Song'}))
 
+    def test_timeout_reports_uncertain_command_without_retry(self):
+        with patch.object(s.urllib.request, 'urlopen', side_effect=TimeoutError) as request:
+            with self.assertRaisesRegex(s.SpotifyError, 'могла быть принята'):
+                s.request('POST', s.API + '/me/player/next', token='test-token')
+            self.assertEqual(request.call_count, 1)
+
     def test_401_refresh_once(self):
         with patch.object(s,'access_token',side_effect=['old','new']) as tokens, patch.object(s,'request',side_effect=[s.SpotifyError('Spotify HTTP 401'),{'devices':[]}]) as requests:
             self.assertEqual(s.api('GET','/me/player/devices'),{'devices':[]})

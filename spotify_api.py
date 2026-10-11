@@ -55,8 +55,14 @@ def request(method, url, data=None, token=None, form=False):
         # Exclude URL/request/response bodies: they can contain OAuth credentials.
         error.close()
         raise SpotifyError(f'Spotify HTTP {error.code}') from None
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-        raise SpotifyError('Нет ответа Spotify: проверьте сеть и повторите.') from None
+    except TimeoutError:
+        raise SpotifyError('Таймаут Spotify. Команда могла быть принята; проверьте --spotify-status перед повтором.') from None
+    except urllib.error.URLError as error:
+        if isinstance(error.reason, TimeoutError):
+            raise SpotifyError('Таймаут Spotify. Команда могла быть принята; проверьте --spotify-status перед повтором.') from None
+        raise SpotifyError(f'Нет соединения со Spotify ({type(error.reason).__name__}). Проверьте сеть.') from None
+    except json.JSONDecodeError:
+        raise SpotifyError('Spotify вернул неожиданный формат ответа; проверьте --spotify-status.') from None
 
 
 def save_token(data, previous=None):
@@ -208,13 +214,13 @@ def search_uri(kind, query):
     return items[0]['uri'], items[0].get('name', query)
 
 
-def playlist_selection(args):
+def playlist_selection(args, selected=None):
     """Retain playlist context instead of replacing its queue with a single URI."""
     if args.get('playlist_query'):
         uri, _ = search_uri('playlist', args['playlist_query'])
     else:
         current = api('GET', '/me/player') or {}
-        if (current.get('device') or {}).get('id') != device_id():
+        if (current.get('device') or {}).get('id') != (selected or device_id()):
             raise SpotifyError('На Slavik нет активного плейлиста. Назовите плейлист.')
         uri = (current.get('context') or {}).get('uri', '')
     if not re.fullmatch(r'spotify:playlist:[A-Za-z0-9]+', uri):
@@ -291,7 +297,7 @@ def spotify_command(args):
         selected = device_id()
         params = {'device_id': selected}
         if action == 'play_from_playlist':
-            body, name = playlist_selection(args)
+            body, name = playlist_selection(args, selected)
             api('PUT', '/me/player/play', body, params)
             return f'Spotify принял выбор в плейлисте: {name}.'
         if action == 'play_mood':
