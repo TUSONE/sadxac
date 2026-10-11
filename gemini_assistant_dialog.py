@@ -28,6 +28,7 @@ OUTPUT_CHANNELS = 2
 
 # После обращения можно продолжать разговор без повторения имени.
 AWAKE_SECONDS = float(os.getenv("SLAVIK_AWAKE_SECONDS", "20"))
+WAKE_ENABLED = os.getenv("SLAVIK_WAKE_ENABLED", "0") == "1"
 DEBUG_AUDIO = os.getenv("DEBUG_AUDIO", "0") == "1"
 
 WAKE_PATTERNS = [
@@ -40,16 +41,35 @@ WAKE_PATTERNS = [
 
 SYSTEM_PROMPT = os.getenv(
     "GEMINI_SYSTEM_PROMPT",
-    """Ты голосовой домашний ассистент по имени Славик.
-
-Главное правило: обычно ты молчишь. Отвечай только когда пользователь обращается к тебе словами «Эй Славка», «Славик», «Ебаные славики», «Славуха» или очень близким по произношению вариантом. После такого обращения разговор считается активным, и следующие реплики пользователя некоторое время могут идти без повторения имени.
-
-Не отвечай на разговоры людей между собой, телевизор, музыку, случайную речь и на свой собственный голос, который попал обратно в микрофон. Твоя собственная речь никогда не является новой командой пользователя.
-
-Пользователь может перебить тебя во время ответа. Если слышишь реальную новую реплику пользователя — немедленно уступи ему слово. Не комментируй техническую работу микрофона, AEC, VAD или аудиопотока.
-
-Отвечай по-русски естественно, коротко и разговорно, если пользователь не попросил иначе.""",
+    """Ты голосовой собеседник по имени Славик. Веди естественный непрерывный
+живой разговор: слушай пользователя, отвечай и поддерживай контекст беседы.
+Не требуй имени или команды активации. Не объявляй режим вопрос-ответ.
+Пользователь может говорить поверх твоего ответа: немедленно уступи ему слово.
+Не воспринимай собственный голос из динамика как новую реплику пользователя.
+Не комментируй техническую работу микрофона, AEC, VAD или аудиопотока.
+Отвечай естественно и кратко, если пользователь не попросил подробностей.""",
 )
+
+
+def system_instruction():
+    # Native-audio Live transcription has no supported forced-language setting.
+    # This is a conversational language hint, not a guarantee of ASR accuracy.
+    language = """Основной язык разговора — русский. По умолчанию говори по-русски.
+Пользователь может говорить с акцентом и употреблять приветствия «салом»,
+«салам», английские названия и сленг «братуха». Такие слова сами по себе не
+означают переход на португальский или другой язык. Если речь неясна,
+коротко переспроси по-русски; не выдумывай услышанное. Переключай язык только
+по явной просьбе пользователя."""
+    mode = (
+        "Режим пробуждения включён. Правило этого режима имеет приоритет: "
+        "обычно молчи; отвечай после обращения «Эй Славка», «Славик», "
+        "«Ебаные славики», «Славуха». После обращения поддерживай диалог "
+        f"около {AWAKE_SECONDS:g} секунд без повторения имени."
+        if WAKE_ENABLED else
+        "Непрерывный диалог включён. Отвечай на обращённую к тебе речь сразу, "
+        "без слова пробуждения и без ограничения окна разговора."
+    )
+    return SYSTEM_PROMPT + "\n" + language + "\n" + mode
 
 
 def require_api_key() -> str:
@@ -171,7 +191,8 @@ def contains_wake(text: str) -> bool:
 
 
 class WakeGate:
-    def __init__(self):
+    def __init__(self, wake_enabled=WAKE_ENABLED):
+        self.wake_enabled = wake_enabled
         if AWAKE_SECONDS <= 0:
             raise ValueError("SLAVIK_AWAKE_SECONDS must be positive")
         self.awake_until = 0.0
@@ -179,12 +200,14 @@ class WakeGate:
 
     @property
     def awake(self) -> bool:
-        return time.monotonic() < self.awake_until
+        return not self.wake_enabled or time.monotonic() < self.awake_until
 
     def extend(self):
         self.awake_until = time.monotonic() + AWAKE_SECONDS
 
     def feed_transcript(self, text: str) -> bool:
+        if not self.wake_enabled:
+            return False
         if not text:
             return False
         now = time.monotonic()
@@ -417,7 +440,9 @@ async def run():
         await capture.start()
         await player.start()
         async with client.aio.live.connect(model=MODEL, config=config) as session:
-            print(f"[Gemini Live подключен] Model={MODEL}; окно={AWAKE_SECONDS}s", flush=True)
+            print(f"[Gemini Live подключен] Model={MODEL}", flush=True)
+            print(f"Режим: пробуждение, окно {AWAKE_SECONDS:g}s" if WAKE_ENABLED else
+                  "Режим: непрерывный диалог, без слова пробуждения", flush=True)
             print(f"Mic={MIC_SOURCE}: 16k stereo -> right mono; Out={SPEAKER_SINK}: 24k mono -> 48k stereo", flush=True)
             async with asyncio.TaskGroup() as tg:
                 tg.create_task(microphone_sender(session, capture))
@@ -437,7 +462,7 @@ def make_config(enable_spotify=False):
     from google.genai import types
     return types.LiveConnectConfig(
         response_modalities=[types.Modality.AUDIO],
-        system_instruction=SYSTEM_PROMPT + (
+        system_instruction=system_instruction() + (
             " Для музыкальных просьб используй spotify_command; сообщай об успехе только по результату инструмента."
             if enable_spotify else " Управление Spotify сейчас недоступно; не заявляй, что включил музыку."
         ),
