@@ -9,6 +9,7 @@ umask 077
 mkdir -p "$HOME/slavik-diagnostics"
 report=$(mktemp -d "$HOME/slavik-diagnostics/runtime-XXXXXX")
 started=$(date --iso-8601=seconds)
+"${voice_env[@]}" timeout 5 pw-cli --version > "$report/pipewire-version.txt" 2>&1 || true
 git -C "$(dirname -- "${BASH_SOURCE[0]}")" rev-parse HEAD > "$report/revision.txt" 2>&1 || true
 printf '20 секунд наблюдения. Оставьте музыку включённой; в другом окне остановите/запустите Славика при слышимом обрыве.\nКаталог: %s\n' "$report"
 ps -eLo pid,tid,cls,rtprio,pri,ni,psr,pcpu,comm > "$report/scheduling-before.txt"

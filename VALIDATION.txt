@@ -53,3 +53,8 @@ no repeated mutation, timestamped track/artist/position/duration summary, readba
 and wrong-device/stale-state handling. Runtime quantum script bash syntax checked.
 User report establishes rapidly increasing PipeWire graph errors; no board execution of
 1024 quantum or demonstrated ASR improvement yet. Journal permission issue addressed.
+
+960 quantum experiment: both shell scripts pass bash -n and diff whitespace checks.
+No Python behavior changes. User's 1024 report has flat ALSA ERR counters but +448 on
+each AEC source/playback node. 960 quantum and acoustic intelligibility remain untested
+on board. Restoring previous 1024-script backups remains supported.
