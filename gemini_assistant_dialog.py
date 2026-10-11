@@ -175,7 +175,7 @@ def audio_command(mode, device=None):
         return ["parec", "--raw", f"--device={device}", "--format=s16le",
                 "--rate=16000", "--channels=2"]
     return ["pacat", "--playback", "--raw", f"--device={device}",
-            "--format=s16le", "--rate=48000", "--channels=2", "--latency-msec=40"]
+            "--format=s16le", "--rate=48000", "--channels=2", "--latency-msec=120"]
 
 
 async def stop_process(proc):
@@ -199,7 +199,11 @@ def normalize_text(text: str) -> str:
 
 def contains_wake(text: str) -> bool:
     norm = normalize_text(text)
-    return any(p.search(norm) for p in WAKE_PATTERNS)
+    if any(p.search(norm) for p in WAKE_PATTERNS):
+        return True
+    # Observed ASR loss of the middle consonant; require an addressed command.
+    return bool(re.search(r"\bслайк[а]?\b", norm) and re.search(
+        r"\b(?:привет|включи|выключи|поставь|громкость|сделай|следующий|предыдущий|пауза|тише|громче)\b", norm))
 
 
 class WakeGate:
@@ -290,6 +294,7 @@ class PulsePlayer:
         self.proc = None
         self.generation = 0
         self.resampler = Resampler()
+        self.audio_until = 0.0
 
     async def _spawn(self):
         proc = await asyncio.create_subprocess_exec(
@@ -322,6 +327,7 @@ class PulsePlayer:
     async def flush(self):
         # No drain lock: kill playback before waiting for a blocked writer.
         self.generation += 1
+        self.audio_until = 0.0
         self.resampler.reset()
         while not self.queue.empty():
             self.queue.get_nowait()
@@ -347,6 +353,7 @@ class PulsePlayer:
                     err = await proc.stderr.read()
                     raise RuntimeError(f"Playback exited: {err.decode(errors='replace')}")
                 try:
+                    self.audio_until = max(time.monotonic(), self.audio_until) + len(data) / (48000 * 4)
                     proc.stdin.write(data)
                     await proc.stdin.drain()
                 except (BrokenPipeError, ConnectionResetError):
@@ -358,6 +365,44 @@ class PulsePlayer:
     async def close(self):
         await stop_process(self.proc)
 
+
+
+async def conversation_focus(gate, player):
+    """Keep a five-second listening window after audible output; duck Spotify."""
+    proc = None
+    last_active = None
+    try:
+        if os.getenv("SLAVIK_MUSIC_DUCK", "1") == "1" and os.getenv("SLAVIK_AUDIO_HELPER"):
+            proc = await asyncio.create_subprocess_exec(
+                "sudo", "-n", "-H", "-u", "voice", os.environ["SLAVIK_AUDIO_HELPER"], "duck",
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL)
+        while True:
+            busy = not player.queue.empty() or time.monotonic() < player.audio_until + .12
+            if busy:
+                gate.extend()
+            active = gate.awake or busy
+            if proc and proc.returncode is not None:
+                print('[Audio] Приглушение недоступно: обновите аудиомост через bash install-linux.sh.', flush=True)
+                proc = None
+            if proc and active != last_active:
+                try:
+                    proc.stdin.write(b'on\n' if active else b'off\n')
+                    await proc.stdin.drain()
+                    last_active = active
+                except (BrokenPipeError, ConnectionResetError):
+                    await stop_process(proc)
+                    proc = None
+                    print('[Audio] Приглушение недоступно: проверьте аудиомост.', flush=True)
+            await asyncio.sleep(.2)
+    finally:
+        if proc:
+            # EOF lets the helper restore stream volumes, including on Ctrl+C.
+            proc.stdin.close()
+            try:
+                await asyncio.wait_for(proc.wait(), 8)
+            except asyncio.TimeoutError:
+                await stop_process(proc)
 
 
 async def microphone_sender(session, capture: PulseCapture):
@@ -484,6 +529,7 @@ async def run():
                 tg.create_task(receiver(session, player, gate, tool_queue))
                 tg.create_task(tool_worker(session, tool_queue, spotify))
                 tg.create_task(player.run())
+                tg.create_task(conversation_focus(gate, player))
     finally:
         await capture.close()
         await player.close()

@@ -19,3 +19,13 @@ Shell syntax validated for tune-audio.sh and revised set-output-max.sh.
 User confirmed manual Connect track switching after the previous binary patch.
 Hardware level changes and their recognition/AEC effects are NOT verified in cloud;
 require board tune, recalibration, AEC_REPORT and live voice test. No dependency changes.
+
+Conversation mixing follow-up: 61 Python tests passed. New checks cover duck/restore,
+manual stream-volume precedence, recycled stream identity, new music during conversation,
+EOF cleanup, contextual wake variants, post-reply listening window and homonymous artists.
+Bash syntax passed for install-linux.sh. Root-owned helper module and sudoers install
+require board execution; visudo is not installed in this cloud workspace (installer checks it).
+Board AEC_REPORT supplied by user: right music RMS28.6, speech+music752.3, no clipping.
+This does not establish intelligibility or prove the cause of simultaneous playback artifacts.
+Real Pulse ducking, mixed playback stability, new wake behavior and artist selection
+remain to be tested on the user's board/account. No SDK/dependency changes.

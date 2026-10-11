@@ -25,7 +25,7 @@ def commands(backends, librespot='/usr/bin/librespot', pacat='/usr/bin/pacat'):
     elif 'pipe' in backends:
         backend = ['--backend', 'pipe']  # decoded PCM, not --passthrough compressed data
         output = [pacat, '--playback', '--raw', '--device=voice_aec_sink',
-                  '--format=s16le', '--rate=44100', '--channels=2', '--latency-msec=80']
+                  '--format=s16le', '--rate=44100', '--channels=2', '--latency-msec=120', '--property=application.name=SlavikSpotify']
     else:
         raise RuntimeError('librespot has neither pulseaudio nor pipe backend')
     music = [librespot, '--name', 'Slavik', *backend, '--format', 'S16',

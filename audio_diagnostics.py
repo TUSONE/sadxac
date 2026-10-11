@@ -23,7 +23,7 @@ def summarize_nodes(kind, rows):
     fields = ('index', 'name', 'state', 'sample_specification', 'channel_map',
               'mute', 'volume', 'base_volume', 'sink', 'source', 'owner_module',
               'buffer_usec', 'sink_usec', 'source_usec', 'monitor_of_sink')
-    properties = ('application.name', 'media.name', 'node.name', 'device.description')
+    properties = ('application.name', 'application.process.binary', 'application.process.id', 'media.name', 'node.name', 'device.description')
     result = []
     for row in rows:
         safe = {key: row[key] for key in fields if key in row}

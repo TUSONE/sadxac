@@ -20,16 +20,17 @@ PY
 id voice >/dev/null
 backup="$HOME/slavik-backups/infrastructure-$(date +%Y%m%d-%H%M%S)-$$"
 mkdir -p "$backup"
-for pair in '/usr/local/libexec/slavik-audio:slavik-audio' '/etc/sudoers.d/slavik-audio:slavik-sudoers'; do
+for pair in '/usr/local/libexec/slavik-audio:slavik-audio' '/etc/sudoers.d/slavik-audio:slavik-sudoers' '/usr/local/libexec/music_duck.py:music_duck.py'; do
     source_path=${pair%:*}; name=${pair##*:}
     if sudo test -f "$source_path"; then sudo cat "$source_path" > "$backup/$name"; fi
 done
 sudo install -d -o root -g root -m 755 /usr/local/libexec
 sudo install -o root -g root -m 755 slavik-audio /usr/local/libexec/slavik-audio
+sudo install -o root -g root -m 644 music_duck.py /usr/local/libexec/music_duck.py
 rules=$(mktemp)
 trap 'rm -f "$rules"' EXIT
 cat > "$rules" <<'RULES'
-tusone ALL=(voice) NOPASSWD: /usr/local/libexec/slavik-audio capture *, /usr/local/libexec/slavik-audio playback *, /usr/local/libexec/slavik-audio check, /usr/local/libexec/slavik-audio volume *
+tusone ALL=(voice) NOPASSWD: /usr/local/libexec/slavik-audio capture *, /usr/local/libexec/slavik-audio playback *, /usr/local/libexec/slavik-audio check, /usr/local/libexec/slavik-audio volume *, /usr/local/libexec/slavik-audio duck
 RULES
 sudo visudo -cf "$rules"
 sudo install -o root -g root -m 440 "$rules" /etc/sudoers.d/slavik-audio

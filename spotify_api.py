@@ -222,8 +222,13 @@ def search_uri(kind, query):
     if kind == 'artist':
         matches = [item for item in items if item and item.get('uri') and
                    artist_key(item.get('name', '')) == search_query]
-        if len(matches) != 1:
-            raise SpotifyError(f'Исполнитель {query!r} не найден однозначно. Уточните имя; другой исполнитель не включён.')
+        if not matches:
+            found = ', '.join(item.get('name', '?') for item in items if item) or 'пустой результат'
+            raise SpotifyError(f'Нет совпадения имени {query!r}. Spotify вернул: {found}.')
+        # Homonymous artists are common. Prefer established popularity when the
+        # API supplies it, otherwise retain Spotify's relevance ordering.
+        matches.sort(key=lambda item: ((item.get('followers') or {}).get('total', 0),
+                                       item.get('popularity', 0)), reverse=True)
         return matches[0]['uri'], matches[0]['name']
     if not items or not items[0] or not items[0].get('uri'):
         raise SpotifyError('Spotify ничего не нашёл по этому запросу.')
