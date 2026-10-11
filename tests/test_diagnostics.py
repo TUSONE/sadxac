@@ -1,0 +1,46 @@
+import json
+import subprocess
+import unittest
+from unittest.mock import patch
+from types import SimpleNamespace as NS
+import audio_diagnostics as d
+import spotify_api as s
+
+
+class DiagnosticTests(unittest.TestCase):
+    def test_pulse_allowlist_excludes_credentials_and_unrelated_module_arguments(self):
+        rows = [{'index': 1, 'name': 'module-echo-cancel',
+                 'argument': 'source_master=physical source_name=voice_aec_source aec_method=webrtc password=secret',
+                 'properties': {'application.name': 'Music', 'secret': 'must-not-log'}},
+                {'index': 2, 'name': 'other', 'argument': 'password=secret'}]
+        result = d.summarize_nodes('modules', rows)
+        text = json.dumps(result)
+        self.assertNotIn('secret', text)
+        self.assertEqual(result[0]['aec_arguments']['source_master'], 'physical')
+        self.assertNotIn('argument', result[1])
+        result = d.summarize_nodes('sinks', rows)
+        self.assertNotIn('secret', json.dumps(result))
+
+    def test_diagnostics_fail_boundedly_without_leaking_command_error(self):
+        with patch.object(d.subprocess, 'run', return_value=NS(returncode=1, stdout='secret', stderr='secret')):
+            self.assertEqual(d.command(['test']), {'error': 'command exited 1'})
+        with patch.object(d.subprocess, 'run', side_effect=subprocess.TimeoutExpired('secret', 8)):
+            self.assertEqual(d.command(['test']), {'error': 'TimeoutExpired'})
+
+    def test_spotify_status_reports_context_progress_and_restrictions(self):
+        with patch.object(s, 'devices', return_value=[{'name': 'Slavik', 'is_active': True}]), \
+             patch.object(s, 'api', return_value={'device': {'name': 'Slavik'}, 'is_playing': True,
+                   'item': {'name': 'Third song', 'uri': 'spotify:track:third'},
+                   'context': {'uri': 'spotify:playlist:abc'}, 'progress_ms': 2000,
+                   'actions': {'disallows': {'skipping_next': True, 'pausing': False}},
+                   'access_token': 'must-not-log'}):
+            text = s.spotify_command({'action': 'status'})
+        self.assertIn('Third song', text)
+        self.assertIn('spotify:playlist:abc', text)
+        self.assertIn('progress_ms=2000', text)
+        self.assertIn('skipping_next', text)
+        self.assertNotIn('must-not-log', text)
+
+    def test_status_works_when_nothing_is_playing(self):
+        with patch.object(s, 'devices', return_value=[]), patch.object(s, 'api', return_value=None):
+            self.assertIn('Активное: нет', s.spotify_command({'action': 'status'}))

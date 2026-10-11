@@ -271,8 +271,18 @@ def spotify_command(args):
     try:
         action = args.get('action')
         if action == 'status':
-            names = [d.get('name', '?') for d in devices()]
-            return 'Устройства Spotify: ' + (', '.join(names) or 'нет; выберите Slavik в приложении Spotify')
+            available = devices()
+            names = [d.get('name', '?') for d in available]
+            current = api('GET', '/me/player') or {}
+            device = current.get('device') or {}
+            track = current.get('item') or {}
+            context = current.get('context') or {}
+            lines = ['Устройства Spotify: ' + (', '.join(names) or 'нет; выберите Slavik в приложении Spotify')]
+            lines.extend(f"  {d.get('name', '?')}: active={d.get('is_active')}, restricted={d.get('is_restricted')}, volume={d.get('volume_percent')}, supports_volume={d.get('supports_volume')}" for d in available)
+            lines.append(f"Активное: {device.get('name', 'нет')}; playing={current.get('is_playing')}; progress_ms={current.get('progress_ms')}; shuffle={current.get('shuffle_state')}; repeat={current.get('repeat_state')}")
+            lines.append(f"Трек: {track.get('name', 'нет')}; uri={track.get('uri')}; context={context.get('uri')}")
+            lines.append('Ограничения действий: ' + ', '.join(k for k, v in (current.get('actions') or {}).get('disallows', {}).items() if v))
+            return '\n'.join(lines)
         supported = {'play_track', 'play_artist', 'play_playlist', 'pause', 'stop', 'resume',
                      'play_pause', 'next', 'previous', 'volume_up', 'volume_down',
                      'set_volume', 'play_mood', 'play_from_playlist'}

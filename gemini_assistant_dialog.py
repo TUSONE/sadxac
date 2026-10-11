@@ -32,6 +32,11 @@ OUTPUT_CHANNELS = 2
 AWAKE_SECONDS = float(os.getenv("SLAVIK_AWAKE_SECONDS", "5"))
 WAKE_ENABLED = os.getenv("SLAVIK_WAKE_ENABLED", "1") == "1"
 DEBUG_AUDIO = os.getenv("DEBUG_AUDIO", "0") == "1"
+DEBUG_EVENTS = os.getenv("SLAVIK_DEBUG_EVENTS", "0") == "1"
+
+def event_log(name, **fields):
+    if DEBUG_EVENTS:
+        print(f"[EVENT {time.monotonic():.3f}] {name} " + " ".join(f"{k}={v}" for k, v in fields.items()), flush=True)
 
 WAKE_PATTERNS = [
     re.compile(r"\b(?:эй\s+)?славк[аоу]\b", re.I),
@@ -373,6 +378,7 @@ async def receiver(session, player, gate, tool_queue=None):
             sc = response.server_content
             interrupted = bool(sc and getattr(sc, "interrupted", False))
             if interrupted:
+                event_log("interrupted", queued_blocks=player.queue.qsize() if hasattr(player, "queue") else "unknown", audible=audible_turn, awake=gate.awake)
                 await player.flush()
                 audible_turn = None
                 gate.clear_turn_text()
@@ -387,6 +393,7 @@ async def receiver(session, player, gate, tool_queue=None):
                         gate.clear_turn_text()
             if tool_queue is not None and getattr(response, "tool_call", None):
                 for call in response.tool_call.function_calls or []:
+                    event_log("tool_received", tool=call.name, id=call.id, authorized=gate.response_allowed)
                     tool_queue.put_nowait((call, gate.response_allowed))
             # Freeze the gate for each model turn. Never release old hidden audio
             # after a later wake word, and never truncate an authorized long reply.
@@ -426,6 +433,7 @@ async def tool_worker(session, queue, spotify):
     from google.genai import types
     while True:
         call, authorized = await queue.get()
+        event_log("tool_start", tool=call.name, id=call.id, authorized=authorized)
         try:
             if not authorized:
                 result = "Команда отклонена: ассистент спит."
@@ -438,6 +446,7 @@ async def tool_worker(session, queue, spotify):
                     result = await asyncio.to_thread(spotify, dict(call.args or {}))
                 except Exception:
                     result = "Spotify не выполнил команду. Проверьте мост и авторизацию."
+            event_log("tool_result", tool=call.name, id=call.id, result=result)
             await session.send_tool_response(function_responses=[types.FunctionResponse(
                 id=call.id, name=call.name, response={"result": result})])
         finally:
@@ -663,7 +672,10 @@ async def entry(args):
     loop = asyncio.get_running_loop()
     loop.add_signal_handler(signal.SIGTERM, task.cancel)
     try:
-        if args.spotify_login or args.spotify_status:
+        if args.diagnose:
+            from audio_diagnostics import print_diagnostics
+            await asyncio.to_thread(print_diagnostics)
+        elif args.spotify_login or args.spotify_status or args.spotify_next or args.spotify_previous:
             from spotify_api import login, spotify_command
             if args.spotify_login:
                 import threading
@@ -673,7 +685,8 @@ async def entry(args):
                 finally:
                     stopped.set()
             else:
-                result = await asyncio.to_thread(spotify_command, {"action": "status"})
+                action = "next" if args.spotify_next else "previous" if args.spotify_previous else "status"
+                result = await asyncio.to_thread(spotify_command, {"action": action})
                 if result.startswith("Не выполнено:"):
                     raise RuntimeError(result)
                 print(result)
@@ -689,11 +702,14 @@ async def entry(args):
 def main():
     parser = argparse.ArgumentParser()
     modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--diagnose", action="store_true")
     modes.add_argument("--audio-test", action="store_true")
     modes.add_argument("--mic-test", action="store_true")
     modes.add_argument("--calibrate-mic", action="store_true")
     modes.add_argument("--spotify-login", action="store_true")
     modes.add_argument("--spotify-status", action="store_true")
+    modes.add_argument("--spotify-next", action="store_true")
+    modes.add_argument("--spotify-previous", action="store_true")
     args = parser.parse_args()
     try:
         asyncio.run(entry(args))
