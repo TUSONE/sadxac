@@ -4,6 +4,7 @@ import math
 import struct
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace as NS
 
@@ -72,6 +73,27 @@ class WakeTests(unittest.TestCase):
         self.assertFalse(gate.feed_transcript('Привет, братуха'))
         self.assertTrue(gate.awake)
         self.assertIn('Основной язык разговора — русский', a.system_instruction())
+
+    def test_wake_timer_expires_and_background_cannot_extend_or_reopen(self):
+        with patch.object(a.time, 'monotonic') as clock:
+            clock.return_value = 100
+            gate = a.WakeGate(wake_enabled=True)
+            self.assertFalse(gate.awake)
+            self.assertFalse(gate.feed_transcript('Привет, братуха'))
+            self.assertTrue(gate.feed_transcript('Славик'))
+            self.assertEqual(gate.awake_until, 100 + a.AWAKE_SECONDS)
+            clock.return_value = 100 + a.AWAKE_SECONDS / 2
+            gate.feed_transcript('Как дела?')
+            deadline = gate.awake_until
+            self.assertEqual(deadline, clock.return_value + a.AWAKE_SECONDS)
+            clock.return_value = deadline
+            self.assertFalse(gate.awake)
+            gate.feed_transcript('Разговор между людьми')
+            self.assertFalse(gate.awake)
+            self.assertEqual(gate.awake_until, deadline)
+            clock.return_value += 10
+            self.assertTrue(gate.feed_transcript('Эй Славка'))
+            self.assertTrue(gate.awake)
 
     def test_sdk_config(self):
         config = a.make_config().model_dump(exclude_none=True)

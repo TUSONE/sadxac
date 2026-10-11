@@ -1,5 +1,5 @@
 Local validation: Linux x86_64, Python 3.12.14, google-genai 2.29.0
-17 unittest checks passed, including ungated continuous playback with incorrect input transcription.
+18 unittest checks passed, including ungated continuous playback with incorrect input transcription.
 SDK LiveConnectConfig validated, including optional Spotify tool schema.
 pip check passed.
 Python AST parsing, bash -n, UTF-8 without BOM / LF checks passed.
