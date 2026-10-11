@@ -224,6 +224,8 @@ class WakeGate:
             raise ValueError("SLAVIK_AWAKE_SECONDS must be positive")
         self.awake_until = 0.0
         self.addressed = False
+        self.music_finish_pending = False
+        self.close_when_drained = False
         self.input_buf = ""
         self.command_authorized = False
 
@@ -236,6 +238,9 @@ class WakeGate:
         return self.awake or self.command_authorized
 
     def complete_turn(self):
+        if self.music_finish_pending:
+            self.close_when_drained = True
+            self.music_finish_pending = False
         self.clear_turn_text()
         self.command_authorized = False
 
@@ -254,6 +259,7 @@ class WakeGate:
         self.input_buf = (self.input_buf + text)[-300:]
         if contains_wake(text) or contains_wake(self.input_buf):
             self.addressed = True
+            self.music_finish_pending = self.close_when_drained = False
             self.command_authorized = True
             was_asleep = not self.awake
             self.extend()
@@ -269,13 +275,14 @@ class WakeGate:
 
 
 class PulseCapture:
-    def __init__(self, processed=True):
+    def __init__(self, processed=True, source=None):
         self.proc = None
-        self.processor = load_processor(MIC_SOURCE) if processed else None
+        self.source = source or MIC_SOURCE
+        self.processor = load_processor(self.source) if processed else None
 
     async def start(self):
         self.proc = await asyncio.create_subprocess_exec(
-            *audio_command("capture"), stdin=asyncio.subprocess.DEVNULL,
+            *audio_command("capture", self.source), stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         await asyncio.sleep(0.15)
@@ -418,7 +425,12 @@ async def conversation_focus(gate, player, capture=None):
                 stderr=asyncio.subprocess.DEVNULL)
         while True:
             busy = not player.queue.empty() or time.monotonic() < player.audio_until + .12
-            if busy:
+            if gate.close_when_drained and not busy:
+                gate.awake_until = 0
+                gate.command_authorized = False
+                gate.addressed = False
+                gate.close_when_drained = False
+            elif busy:
                 gate.extend()
             if not gate.response_allowed and not busy:
                 gate.addressed = False
@@ -485,6 +497,7 @@ async def receiver(session, player, gate, tool_queue=None):
                 for call in calls:
                     if audio_wake_enabled() and call.name == "wake_assistant" and (call.args or {}).get("addressed") is True:
                         gate.addressed = True
+                        gate.music_finish_pending = gate.close_when_drained = False
                         gate.extend()
                         gate.command_authorized = True
                         print("[Славик активирован по аудио]", flush=True)
@@ -526,7 +539,7 @@ async def receiver(session, player, gate, tool_queue=None):
 
 
 
-async def tool_worker(session, queue, spotify, player=None):
+async def tool_worker(session, queue, spotify, player=None, gate=None):
     from google.genai import types
     while True:
         call, authorized = await queue.get()
@@ -546,6 +559,12 @@ async def tool_worker(session, queue, spotify, player=None):
                     result = await asyncio.to_thread(spotify, dict(call.args or {}))
                 except Exception:
                     result = "Не удалось обработать результат Spotify. Команда могла выполниться; запроси status перед выводом или повтором."
+            action = (call.args or {}).get("action", "")
+            print(f"[Инструмент] {call.name} {action}: {result}", flush=True)
+            if (gate is not None and authorized and call.name == "spotify_command" and
+                    action in ("play_track", "play_artist", "play_playlist", "play_mood", "play_from_playlist", "resume", "next", "previous") and
+                    result.startswith("Spotify принял")):
+                gate.music_finish_pending = True
             event_log("tool_result", tool=call.name, id=call.id, result=result)
             await session.send_tool_response(function_responses=[types.FunctionResponse(
                 id=call.id, name=call.name, response={"result": result})])
@@ -582,7 +601,7 @@ async def run():
             async with asyncio.TaskGroup() as tg:
                 tg.create_task(microphone_sender(session, capture))
                 tg.create_task(receiver(session, player, gate, tool_queue))
-                tg.create_task(tool_worker(session, tool_queue, spotify, player))
+                tg.create_task(tool_worker(session, tool_queue, spotify, player, gate))
                 tg.create_task(player.run())
                 tg.create_task(conversation_focus(gate, player, capture))
     finally:
@@ -646,7 +665,7 @@ def make_config(enable_spotify=False):
     return types.LiveConnectConfig(
         response_modalities=[types.Modality.AUDIO],
         system_instruction=system_instruction() + " Для громкости используй audio_volume: обычные погромче/потише/громкость N — target=music; говори тише/громче — target=voice. Не меняй голос при просьбе изменить музыку. Сообщай результат только после инструмента." + (
-            " Для музыкальных просьб используй spotify_command. На вопросы что играет, кто исполнитель, какой момент, стоит ли пауза ВСЕГДА сначала вызывай action=status; сообщай устройство, трек, исполнителя и позицию по свежему результату. Не считай принятую команду отказом из-за ошибки чтения статуса. Подтверждённую паузу называй паузой; при неопределённом результате честно сообщай, что подтверждения нет. Не говори о невозможности действия до получения результата инструмента; настроение превращай в конкретный запрос плейлиста. Для выбора другой песни из текущего плейлиста используй play_from_playlist, чтобы сохранить очередь. Просьба включить исполнителя означает play_artist, а не play_track; Кизару — kizaru. Не заменяй запрошенного исполнителя другим. Сообщай имя и успех строго по результату инструмента; при несовпадении имени объясни ошибку, не заявляй, что включил запрошенного исполнителя."
+            " После принятого запуска/выбора музыки коротко назови результат и пожелай приятного прослушивания. Не задавай «что-нибудь ещё?», не продолжай беседу сам. При подтверждённой паузе скажи «Поставил на паузу». Если команда принята, но чтение статуса не удалось, скажи «Команда отправлена, состояние пока не подтверждено», а не «не могу поставить». Для музыкальных просьб используй spotify_command. На вопросы что играет, кто исполнитель, какой момент, стоит ли пауза ВСЕГДА сначала вызывай action=status; сообщай устройство, трек, исполнителя и позицию по свежему результату. Не считай принятую команду отказом из-за ошибки чтения статуса. Подтверждённую паузу называй паузой; при неопределённом результате честно сообщай, что подтверждения нет. Не говори о невозможности действия до получения результата инструмента; настроение превращай в конкретный запрос плейлиста. Для выбора другой песни из текущего плейлиста используй play_from_playlist, чтобы сохранить очередь. Просьба включить исполнителя означает play_artist, а не play_track; Кизару — kizaru. Не заменяй запрошенного исполнителя другим. Сообщай имя и успех строго по результату инструмента; при несовпадении имени объясни ошибку, не заявляй, что включил запрошенного исполнителя."
             if enable_spotify else " Управление Spotify сейчас недоступно; не заявляй, что включил музыку."
         ),
         tools=[types.Tool(function_declarations=[d for d in AUDIO_DECLARATIONS if d["name"] != "wake_assistant" or audio_wake_enabled()] + (SPOTIFY_DECLARATIONS if enable_spotify else []))],
@@ -775,27 +794,31 @@ async def record_mic(output_dir=None, seconds=12):
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     folder = Path(tempfile.mkdtemp(prefix='mic-', dir=root))
     capture = PulseCapture()
+    physical = PulseCapture(processed=False, source="alsa_input.platform-sound_i2s.stereo-fallback")
     try:
         with ExitStack() as stack:
             writers = []
-            for name in ('aec-before-dsp.wav', 'sent-to-gemini.wav'):
+            for name in ('aec-before-dsp.wav', 'sent-to-gemini.wav', 'physical-stereo.wav'):
                 handle = stack.enter_context(os.fdopen(os.open(folder / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'wb'))
                 writer = stack.enter_context(wave.open(handle, 'wb'))
-                writer.setnchannels(1)
+                writer.setnchannels(2 if name == "physical-stereo.wav" else 1)
                 writer.setsampwidth(2)
                 writer.setframerate(INPUT_RATE)
                 writers.append(writer)
             print(f'[Запись] {seconds} секунд: говорите при музыке/ответе Славика. WAV сохраняются только локально.', flush=True)
             await capture.start()
+            await physical.start()
             for _ in range(seconds * 1000 // INPUT_CHUNK_MS):
-                stereo = await asyncio.wait_for(capture.read_stereo(), 5)
+                stereo, raw = await asyncio.wait_for(asyncio.gather(capture.read_stereo(), physical.read_stereo()), 5)
                 mono = stereo_to_mono_channel(stereo, INPUT_SELECTED_CHANNEL)
                 writers[0].writeframesraw(mono)
                 writers[1].writeframesraw(capture.processor.process(mono))
+                writers[2].writeframesraw(raw)
         print(f'[Запись готова] {folder}', flush=True)
         return folder
     finally:
         await capture.close()
+        await physical.close()
 
 
 async def entry(args):

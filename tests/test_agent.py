@@ -173,6 +173,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         import tempfile
         import wave
         class Capture:
+            def __init__(self, **kwargs): pass
             processor = NS(process=lambda raw: raw)
             async def start(self): pass
             async def close(self): pass
@@ -182,8 +183,8 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             for path in folder.iterdir():
                 self.assertEqual(path.stat().st_mode & 0o777, 0o600)
                 with wave.open(str(path), 'rb') as f:
-                    self.assertEqual((f.getframerate(), f.getnchannels(), f.getnframes()), (16000, 1, 16000))
-                    self.assertEqual(f.readframes(1), struct.pack('<h', 22))
+                    self.assertEqual((f.getframerate(), f.getnchannels(), f.getnframes()), (16000, 2 if path.name == 'physical-stereo.wav' else 1, 16000))
+                    self.assertEqual(f.readframes(1), struct.pack('<hh', 11, 22) if path.name == 'physical-stereo.wav' else struct.pack('<h', 22))
 
     async def test_music_call_alone_cannot_wake_from_bad_transcription(self):
         gate = a.WakeGate(wake_enabled=True)

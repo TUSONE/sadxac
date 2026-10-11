@@ -57,6 +57,28 @@ class FocusTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(gate.awake)
 
 
+    async def test_music_confirmation_closes_only_after_audio_drains(self):
+        gate = agent.WakeGate()
+        gate.feed_transcript('Славик включи музыку')
+        gate.music_finish_pending = True
+        gate.complete_turn()
+        player = SimpleNamespace(queue=asyncio.Queue(), audio_until=1e30)
+        ticks = []
+        async def tick(_):
+            ticks.append(gate.awake)
+            if len(ticks) == 1:
+                player.audio_until = 0
+            else:
+                raise asyncio.CancelledError
+        with patch.dict(agent.os.environ, {'SLAVIK_MUSIC_DUCK': '0'}), patch.object(agent.asyncio, 'sleep', side_effect=tick):
+            with self.assertRaises(asyncio.CancelledError):
+                await agent.conversation_focus(gate, player)
+        self.assertEqual(ticks, [True, False])
+        self.assertFalse(gate.addressed)
+        gate.close_when_drained = True
+        gate.feed_transcript('Славик говори тише')
+        self.assertFalse(gate.close_when_drained)
+
     async def test_duck_requires_address_and_restores_after_window(self):
         gate = agent.WakeGate()
         player = SimpleNamespace(queue=asyncio.Queue(), audio_until=0)

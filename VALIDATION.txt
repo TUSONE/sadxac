@@ -63,3 +63,8 @@ on board. Restoring previous 1024-script backups remains supported.
 actual480-frame AEC and960-frame graph. Prior960 recommendation withdrawn. Shell syntax
 checked for audio-buffer.sh and repair-aec.sh. Board restart,480 graph deadlines and
 actual intelligibility remain unverified. No Python application/dependency changes.
+
+71 tests pass: music-confirmation closure waits for audio drain, new address cancels
+closure, capture WAVs preserve physical stereo versus AEC mono formats and permissions.
+Tool results now visible without DEBUG_EVENTS. Live model response wording, actual pause
+contradiction and far-field intelligibility remain unverified; audio recordings required.
