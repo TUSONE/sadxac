@@ -72,3 +72,8 @@ contradiction and far-field intelligibility remain unverified; audio recordings 
 72 tests passed: persisted duck crash recovery avoids cumulative attenuation; voice
 PCM scaling uses Pulse-compatible cubic curve. music-levels.sh bash syntax checked.
 Actual stream levels and cause of reported low music remain unverified until board use.
+
+74 tests passed: legacy master40% is migrated to existing music streams before unity
+master, preventing double attenuation of new voice40%; repeated startup at unity does
+not compound attenuation. Bash syntax and diff checks pass. Actual board migration and
+voice/music balance require user verification. WAV analyzed numerically, not listened.

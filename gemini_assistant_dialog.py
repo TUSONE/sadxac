@@ -572,6 +572,23 @@ async def tool_worker(session, queue, spotify, player=None, gate=None):
             queue.task_done()
 
 
+async def prepare_output():
+    helper = os.getenv('SLAVIK_AUDIO_HELPER')
+    if not helper:
+        print('[Громкость] Аудиомост не задан; общий уровень не нормализован.', flush=True)
+        return
+    proc = await asyncio.create_subprocess_exec(
+        'sudo', '-n', '-H', '-u', 'voice', helper, 'prepare',
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    try:
+        output, _ = await asyncio.wait_for(proc.communicate(), 20)
+        if proc.returncode:
+            raise RuntimeError('Не удалось разделить уровни. Остановите другие экземпляры Славика и выполните bash install-linux.sh.')
+        print('[Громкость] ' + output.decode(errors='replace').strip(), flush=True)
+    finally:
+        await stop_process(proc)
+
+
 async def run():
     from google import genai
     api_key = require_api_key()
@@ -585,6 +602,7 @@ async def run():
     config = make_config(spotify is not None)
     tool_queue = asyncio.Queue(maxsize=32)
 
+    await prepare_output()
     capture = PulseCapture()
     player = PulsePlayer()
     gate = WakeGate()

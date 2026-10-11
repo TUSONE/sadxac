@@ -144,3 +144,35 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(len(changes), 2)
         self.assertLess(int(changes[0][-1]), 65536)
         self.assertEqual(current[0], 65536)
+
+
+class OutputMigrationTests(unittest.TestCase):
+    def test_existing_music_level_is_preserved_when_master_becomes_unity(self):
+        import tempfile
+        import json
+        import music_duck
+        sink = {'name': 'voice_aec_sink', 'index': 41, 'volume': {
+            'left': {'value': 26214}, 'right': {'value': 26214}}}
+        music = stream()
+        music['sink'] = 41
+        calls = []
+        def pulse(command, **kwargs):
+            calls.append(command)
+            if command[-1] == 'sinks':
+                return SimpleNamespace(stdout=json.dumps([sink]))
+            if command[-1] == 'sink-inputs':
+                return SimpleNamespace(stdout=json.dumps([music]))
+            return SimpleNamespace(stdout='')
+        with tempfile.TemporaryDirectory() as directory, patch.object(music_duck.subprocess, 'run', side_effect=pulse):
+            music_duck.prepare_output({'XDG_RUNTIME_DIR': directory})
+        self.assertEqual(calls[-2][-4:], ['set-sink-input-volume', '1', '26214', '26214'])
+        self.assertEqual(calls[-1][-3:], ['set-sink-volume', 'voice_aec_sink', '100%'])
+
+    def test_unity_master_does_not_attenuate_music_on_each_restart(self):
+        import tempfile
+        import json
+        import music_duck
+        sink = {'name': 'voice_aec_sink', 'volume': {'left': {'value': 65536}, 'right': {'value': 65536}}}
+        with tempfile.TemporaryDirectory() as directory, patch.object(music_duck.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps([sink]))) as pulse:
+            music_duck.prepare_output({'XDG_RUNTIME_DIR': directory})
+        self.assertEqual(pulse.call_count, 1)

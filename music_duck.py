@@ -136,3 +136,49 @@ def _serve(environment, store):
                 ducker.update(snapshot(), active)
     finally:
         ducker.update(snapshot(), False)
+
+
+def prepare_output(environment):
+    """Move legacy master attenuation into existing streams; future voice is independent."""
+    def pulse(*args):
+        return subprocess.run(['/usr/bin/pactl', *args], env=environment,
+                              capture_output=True, text=True, timeout=3, check=True).stdout
+    with session_store(environment):
+        sinks = json.loads(pulse('--format=json', 'list', 'sinks'))
+        sink = next((s for s in sinks if s['name'] == 'voice_aec_sink'), None)
+        if sink is None:
+            raise RuntimeError('Missing voice_aec_sink')
+        master = {ch: v['value'] for ch, v in sink['volume'].items()}
+        if all(v == 65536 for v in master.values()):
+            print('Общий AEC-выход: 100%; голос и музыка регулируются отдельно.')
+            return
+        streams = [s for s in json.loads(pulse('--format=json', 'list', 'sink-inputs'))
+                   if s.get('sink') == sink['index']]
+        plan = []
+        fallback = sum(master.values()) / len(master)
+        for stream in streams:
+            old = volumes(stream)
+            new = [round(v['value'] * master.get(ch, fallback) / 65536)
+                   for ch, v in stream['volume'].items()]
+            plan.append((stream['index'], old, new))
+        backup = Path(environment['XDG_RUNTIME_DIR']) / 'slavik-duck' / 'master-migration.json'
+        backup.write_text(json.dumps({'sink': sink['index'], 'master': master, 'streams': plan}))
+        backup.chmod(0o600)
+        changed = []
+        try:
+            for index, old, new in plan:
+                changed.append((index, old))
+                pulse('set-sink-input-volume', str(index), *(str(v) for v in new))
+            pulse('set-sink-volume', 'voice_aec_sink', '100%')
+        except (OSError, subprocess.SubprocessError):
+            for index, old in reversed(changed):
+                try:
+                    pulse('set-sink-input-volume', str(index), *(str(v) for v in old))
+                except (OSError, subprocess.SubprocessError):
+                    pass
+            try:
+                pulse('set-sink-volume', 'voice_aec_sink', *(str(v) for v in master.values()))
+            except (OSError, subprocess.SubprocessError):
+                pass
+            raise RuntimeError('Не удалось разделить уровни; проверьте music-levels.sh.') from None
+        print('Убран двойной уровень громкости: AEC-выход 100%; громкость текущих потоков сохранена.')

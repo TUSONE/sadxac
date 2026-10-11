@@ -30,7 +30,7 @@ sudo install -o root -g root -m 644 music_duck.py /usr/local/libexec/music_duck.
 rules=$(mktemp)
 trap 'rm -f "$rules"' EXIT
 cat > "$rules" <<'RULES'
-tusone ALL=(voice) NOPASSWD: /usr/local/libexec/slavik-audio capture *, /usr/local/libexec/slavik-audio playback *, /usr/local/libexec/slavik-audio check, /usr/local/libexec/slavik-audio volume *, /usr/local/libexec/slavik-audio duck
+tusone ALL=(voice) NOPASSWD: /usr/local/libexec/slavik-audio capture *, /usr/local/libexec/slavik-audio playback *, /usr/local/libexec/slavik-audio check, /usr/local/libexec/slavik-audio volume *, /usr/local/libexec/slavik-audio duck, /usr/local/libexec/slavik-audio prepare
 RULES
 sudo visudo -cf "$rules"
 sudo install -o root -g root -m 440 "$rules" /etc/sudoers.d/slavik-audio
