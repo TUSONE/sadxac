@@ -29,3 +29,11 @@ Board AEC_REPORT supplied by user: right music RMS28.6, speech+music752.3, no cl
 This does not establish intelligibility or prove the cause of simultaneous playback artifacts.
 Real Pulse ducking, mixed playback stability, new wake behavior and artist selection
 remain to be tested on the user's board/account. No SDK/dependency changes.
+
+Audio-wake and separate-volume update: 64 tests pass. Regression checks exercise bad
+transcription plus explicit audio wake (including reversed tool order), no authorization
+from a music call alone, strict boolean wake confirmation, voice PCM scaling, independent
+Spotify routing, invalid voice values and near-speech cue rejection of clicks/DC/music floor.
+Acoustic recognition, model wake reliability, early duck false triggers and actual relative
+loudness require board verification. Voice defaults to40% PCM gain; existing system master
+is unchanged. No new dependencies or hardware settings.

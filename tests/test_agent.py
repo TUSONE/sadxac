@@ -46,16 +46,23 @@ class PCMTests(unittest.TestCase):
         r = a.Resampler(); r.convert(b'x')
         with self.assertRaises(RuntimeError): r.finish()
 
-class VolumeTests(unittest.TestCase):
-    def test_master_volume_uses_fixed_bridge_and_validates_percent(self):
-        with patch('subprocess.run') as run:
-            run.return_value.stdout = 'Общая громкость: 40%.\n'
-            self.assertIn('40%', a.audio_volume({'action': 'set', 'percent': 40}))
-            self.assertEqual(run.call_args.args[0][-2:], ['volume', '40'])
-            run.reset_mock()
-            for invalid in [-1, 101, True, '50']:
-                self.assertIn('Не выполнено', a.audio_volume({'action': 'set', 'percent': invalid}))
-            run.assert_not_called()
+class VolumeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_music_and_voice_are_independent(self):
+        player = a.PulsePlayer()
+        called = []
+        spotify = lambda args: called.append(args) or 'music changed'
+        self.assertEqual(player.voice_percent, 40)
+        await a.route_volume({'action': 'up'}, spotify, player)
+        self.assertEqual(called, [{'action': 'volume_up', 'percent': None}])
+        self.assertEqual(player.voice_percent, 40)
+        await a.route_volume({'action': 'down', 'target': 'voice'}, spotify, player)
+        self.assertEqual(player.voice_percent, 30)
+        self.assertEqual(len(called), 1)
+        raw = struct.pack('<hh', 10000, -10000)
+        self.assertEqual(struct.unpack('<hh', player.scale_voice(raw)), (3000, -3000))
+        for value in (-1, 101, True, '50'):
+            self.assertIn('Не выполнено', player.voice_volume({'action': 'set', 'percent': value}))
+        self.assertEqual(player.voice_percent, 30)
 
 class WakeTests(unittest.TestCase):
     def test_wakes_and_background(self):
@@ -132,6 +139,34 @@ def message(data=None, **fields):
     return NS(data=data, server_content=NS(**fields))
 
 class StreamTests(unittest.IsolatedAsyncioTestCase):
+    async def test_audio_wake_with_bad_transcription_authorizes_same_packet(self):
+        for addressed in (True, False, 'true'):
+            gate = a.WakeGate(wake_enabled=True)
+            player = FakePlayer()
+            queue = asyncio.Queue()
+            event = message(input_transcription=NS(text='Валик давай другой трек'))
+            event.tool_call = NS(function_calls=[
+                NS(name='spotify_command', id='music', args={'action': 'next'}),
+                NS(name='wake_assistant', id='wake', args={'addressed': addressed})])
+            session = FakeSession([[event, message(b'answer', turn_complete=True)]])
+            with self.assertRaises(RuntimeError):
+                await a.receiver(session, player, gate, queue)
+            call, authorized = queue.get_nowait()
+            self.assertEqual(call.id, 'music')
+            self.assertEqual(authorized, addressed is True)
+            self.assertEqual(bool(player.audio), addressed is True)
+
+    async def test_music_call_alone_cannot_wake_from_bad_transcription(self):
+        gate = a.WakeGate(wake_enabled=True)
+        player = FakePlayer()
+        queue = asyncio.Queue()
+        event = message(input_transcription=NS(text='Валик давай другой трек'))
+        event.tool_call = NS(function_calls=[NS(name='spotify_command', id='music', args={'action': 'next'})])
+        with self.assertRaises(RuntimeError):
+            await a.receiver(FakeSession([[event, message(b'answer', turn_complete=True)]]), player, gate, queue)
+        self.assertFalse(queue.get_nowait()[1])
+        self.assertEqual(player.audio, [])
+
     async def test_continuous_mode_plays_without_wake_even_with_wrong_transcription(self):
         gate = a.WakeGate(wake_enabled=False); player = FakePlayer()
         session = FakeSession([
@@ -255,7 +290,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             def terminate(self): self.returncode = -15; drained.set()
             async def wait(self): return self.returncode
         player.proc = Proc()
-        player.enqueue(b'audio')
+        player.enqueue(struct.pack('<hh', 1000, -1000))
         writer = asyncio.create_task(player.run())
         await asyncio.sleep(0)
         await asyncio.wait_for(player.flush(), .2)

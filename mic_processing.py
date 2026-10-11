@@ -128,3 +128,24 @@ def load_processor(source):
         return InputProcessor()
     print(f"[Mic] gain={processor.gain:g}, SNR={profile.get('snr_db', '?')}dB, high-pass=60Hz", flush=True)
     return processor
+
+
+class NearSpeech:
+    """Energy cue for brief music ducking only; never authorizes a command."""
+    def __init__(self):
+        self.until = 0.0
+        self.active_samples = 0
+        self.threshold = 180.0
+
+    def feed(self, raw, now):
+        values = samples(raw)
+        if not values:
+            return
+        mean = sum(values) / len(values)
+        rms = math.sqrt(sum((x - mean) ** 2 for x in values) / len(values))
+        if rms >= self.threshold:
+            self.active_samples += len(values)
+            if self.active_samples >= RATE * .12:
+                self.until = now + 2.0
+        else:
+            self.active_samples = 0

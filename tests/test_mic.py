@@ -52,3 +52,23 @@ class MicrophoneTests(unittest.TestCase):
                 self.assertEqual(m.load_processor('different-source').gain, 1)
 
 if __name__ == '__main__': unittest.main()
+
+
+class NearSpeechTests(unittest.TestCase):
+    def test_music_floor_click_dc_and_sustained_voice(self):
+        import struct
+        from mic_processing import NearSpeech
+        detector = NearSpeech()
+        block = lambda amplitude: struct.pack('<hh', amplitude, -amplitude) * 320
+        for i in range(20):
+            detector.feed(block(30), i * .04)
+        self.assertEqual(detector.until, 0)
+        detector.feed(block(10000), 1)
+        detector.feed(block(30), 1.04)
+        self.assertEqual(detector.until, 0)
+        for i in range(5):
+            detector.feed(struct.pack('<h', 1000) * 640, 2 + i * .04)
+        self.assertEqual(detector.until, 0)
+        for i in range(3):
+            detector.feed(block(750), 3 + i * .04)
+        self.assertGreater(detector.until, 5)

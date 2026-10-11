@@ -9,7 +9,7 @@ import argparse
 import math
 import signal
 from contextlib import AsyncExitStack, asynccontextmanager
-from mic_processing import load_processor
+from mic_processing import load_processor, NearSpeech
 from array import array
 
 
@@ -81,7 +81,13 @@ def system_instruction():
         "Непрерывный диалог включён. Отвечай на обращённую к тебе речь сразу, "
         "без слова пробуждения и без ограничения окна разговора."
     )
-    return SYSTEM_PROMPT + "\n" + language + "\n" + mode
+    audio_wake = """Определяй обращение по самому входному аудио: текст транскрипции может ошибаться.
+Когда в аудио пользователь явно обращается к тебе по имени, сначала вызови wake_assistant
+с addressed=true, затем отвечай или выполняй команду. Имя может быть в любой части фразы.
+Не вызывай wake_assistant для музыки, текста песни, своего голоса, посторонней речи
+или просто потому, что понял команду без обращения. При сомнении оставайся молчаливым.
+Не опирайся на написание имени в транскрипции, если само аудио понятно."""
+    return SYSTEM_PROMPT + "\n" + language + "\n" + mode + "\n" + audio_wake
 
 
 def require_api_key() -> str:
@@ -259,6 +265,7 @@ class PulseCapture:
     def __init__(self, processed=True):
         self.proc = None
         self.processor = load_processor(MIC_SOURCE) if processed else None
+        self.near_speech = NearSpeech()
 
     async def start(self):
         self.proc = await asyncio.create_subprocess_exec(
@@ -282,6 +289,7 @@ class PulseCapture:
 
     async def read_mono(self) -> bytes:
         mono = stereo_to_mono_channel(await self.read_stereo(), INPUT_SELECTED_CHANNEL)
+        self.near_speech.feed(mono, time.monotonic())
         return self.processor.process(mono) if self.processor else mono
 
     async def close(self):
@@ -295,6 +303,28 @@ class PulsePlayer:
         self.generation = 0
         self.resampler = Resampler()
         self.audio_until = 0.0
+        self.voice_percent = 40
+
+    def voice_volume(self, args):
+        action = args.get("action")
+        value = args.get("percent")
+        if action == "set" and type(value) is int and 0 <= value <= 100:
+            self.voice_percent = value
+        elif action in ("up", "down"):
+            self.voice_percent = max(0, min(100, self.voice_percent + (10 if action == "up" else -10)))
+        else:
+            return "Не выполнено: задайте громкость голоса от 0 до 100%."
+        return f"Громкость голоса Славика: {self.voice_percent}%."
+
+    def scale_voice(self, data):
+        values = array("h")
+        values.frombytes(data)
+        if sys.byteorder != "little":
+            values.byteswap()
+        output = array("h", (round(x * self.voice_percent / 100) for x in values))
+        if sys.byteorder != "little":
+            output.byteswap()
+        return output.tobytes()
 
     async def _spawn(self):
         proc = await asyncio.create_subprocess_exec(
@@ -354,7 +384,7 @@ class PulsePlayer:
                     raise RuntimeError(f"Playback exited: {err.decode(errors='replace')}")
                 try:
                     self.audio_until = max(time.monotonic(), self.audio_until) + len(data) / (48000 * 4)
-                    proc.stdin.write(data)
+                    proc.stdin.write(self.scale_voice(data))
                     await proc.stdin.drain()
                 except (BrokenPipeError, ConnectionResetError):
                     if generation == self.generation:
@@ -367,7 +397,7 @@ class PulsePlayer:
 
 
 
-async def conversation_focus(gate, player):
+async def conversation_focus(gate, player, capture=None):
     """Keep a five-second listening window after audible output; duck Spotify."""
     proc = None
     last_active = None
@@ -381,7 +411,8 @@ async def conversation_focus(gate, player):
             busy = not player.queue.empty() or time.monotonic() < player.audio_until + .12
             if busy:
                 gate.extend()
-            active = gate.awake or busy
+            near = capture is not None and time.monotonic() < capture.near_speech.until
+            active = gate.awake or busy or near
             if proc and proc.returncode is not None:
                 print('[Audio] Приглушение недоступно: обновите аудиомост через bash install-linux.sh.', flush=True)
                 proc = None
@@ -437,7 +468,16 @@ async def receiver(session, player, gate, tool_queue=None):
                     if getattr(inp, "finished", False):
                         gate.clear_turn_text()
             if tool_queue is not None and getattr(response, "tool_call", None):
-                for call in response.tool_call.function_calls or []:
+                calls = response.tool_call.function_calls or []
+                # Process an explicit audio-based wake before other calls in the
+                # same packet, independent of their order. A music call alone
+                # never bypasses the sleeping gate.
+                for call in calls:
+                    if call.name == "wake_assistant" and (call.args or {}).get("addressed") is True:
+                        gate.extend()
+                        gate.command_authorized = True
+                        print("[Славик активирован по аудио]", flush=True)
+                for call in calls:
                     event_log("tool_received", tool=call.name, id=call.id, authorized=gate.response_allowed,
                               action=(call.args or {}).get("action"), query=(call.args or {}).get("query"))
                     tool_queue.put_nowait((call, gate.response_allowed))
@@ -475,7 +515,7 @@ async def receiver(session, player, gate, tool_queue=None):
 
 
 
-async def tool_worker(session, queue, spotify):
+async def tool_worker(session, queue, spotify, player=None):
     from google.genai import types
     while True:
         call, authorized = await queue.get()
@@ -483,8 +523,11 @@ async def tool_worker(session, queue, spotify):
         try:
             if not authorized:
                 result = "Команда отклонена: ассистент спит."
+            elif call.name == "wake_assistant":
+                result = ("Обращение принято. Можно ответить и выполнить просьбу пользователя."
+                          if (call.args or {}).get("addressed") is True else "Явное обращение не подтверждено.")
             elif call.name == "audio_volume":
-                result = await asyncio.to_thread(audio_volume, dict(call.args or {}))
+                result = await route_volume(dict(call.args or {}), spotify, player)
             elif call.name != "spotify_command" or spotify is None:
                 result = "Неизвестный инструмент."
             else:
@@ -523,45 +566,42 @@ async def run():
             print(f"[Gemini Live подключен] Model={MODEL}", flush=True)
             print(f"Режим: пробуждение, окно {AWAKE_SECONDS:g}s" if WAKE_ENABLED else
                   "Режим: непрерывный диалог, без слова пробуждения", flush=True)
+            print("[Громкость] Голос: 40%; обычные команды громкости управляют музыкой.", flush=True)
             print(f"Mic={MIC_SOURCE}: 16k stereo -> right mono; Out={SPEAKER_SINK}: 24k mono -> 48k stereo", flush=True)
             async with asyncio.TaskGroup() as tg:
                 tg.create_task(microphone_sender(session, capture))
                 tg.create_task(receiver(session, player, gate, tool_queue))
-                tg.create_task(tool_worker(session, tool_queue, spotify))
+                tg.create_task(tool_worker(session, tool_queue, spotify, player))
                 tg.create_task(player.run())
-                tg.create_task(conversation_focus(gate, player))
+                tg.create_task(conversation_focus(gate, player, capture))
     finally:
         await capture.close()
         await player.close()
         await client.aio.aclose()
 
 
-def audio_volume(args):
-    import subprocess
-    action = args.get("action")
-    value = args.get("percent")
-    if action == "set":
-        if type(value) is not int or not 0 <= value <= 100:
-            return "Не выполнено: громкость должна быть целым числом от 0 до 100%."
-        value = str(value)
-    elif action in ("up", "down"):
-        value = action
-    else:
+async def route_volume(args, spotify, player):
+    target = args.get("target", "music")
+    if target == "voice":
+        return player.voice_volume(args) if player else "Не выполнено: голосовой выход недоступен."
+    if target != "music":
+        return "Не выполнено: неизвестная цель громкости."
+    if spotify is None:
+        return "Не выполнено: управление громкостью музыки Spotify недоступно."
+    action = {"up": "volume_up", "down": "volume_down", "set": "set_volume"}.get(args.get("action"))
+    if action is None:
         return "Не выполнено: неизвестная команда громкости."
-    try:
-        result = subprocess.run(
-            ["sudo", "-n", "-H", "-u", "voice",
-             os.getenv("SLAVIK_AUDIO_HELPER", "/usr/local/libexec/slavik-audio"), "volume", value],
-            capture_output=True, text=True, timeout=5, check=True)
-        return result.stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        return "Не выполнено: обновите аудиомост через bash install-linux.sh."
+    return await asyncio.to_thread(spotify, {"action": action, "percent": args.get("percent")})
 
 
-AUDIO_DECLARATIONS = [{"name": "audio_volume",
-    "description": "Общая громкость колонки: музыка и голос Славика. Громче/тише: up/down на 10 процентов; set с percent от 0 до 100. Используй для обычных просьб о громкости.",
+AUDIO_DECLARATIONS = [{"name": "wake_assistant",
+    "description": "Подтверди явно услышанное В АУДИО обращение пользователя по имени Славик/Славка. Транскрипция может быть ошибочной. Вызывай перед ответом/командами после обращения; не вызывай для фоновой речи, музыки, своего голоса или команды без обращения вне окна диалога.",
+    "parameters": {"type": "OBJECT", "properties": {"addressed": {"type": "BOOLEAN"}}, "required": ["addressed"]}},
+    {"name": "audio_volume",
+    "description": "Громкость: обычные просьбы погромче/потише/сделай громкость относятся ТОЛЬКО к музыке (target=music). Говори тише/громче, громкость твоего голоса относятся к target=voice. Голос по умолчанию 40%. up/down шаг 10, set с percent 0..100.",
     "parameters": {"type": "OBJECT", "properties": {
         "action": {"type": "STRING", "enum": ["up", "down", "set"]},
+        "target": {"type": "STRING", "enum": ["music", "voice"], "description": "По умолчанию music; voice только для просьб изменить голос Славика"},
         "percent": {"type": "INTEGER", "description": "Абсолютная громкость 0..100 для set"}}, "required": ["action"]}}]
 SPOTIFY_DECLARATIONS = [{"name": "spotify_command",
     "description": "Spotify: следующий/предыдущий трек next/previous, pause/resume/play_pause/stop; play_track по названию; play_playlist по названию; play_artist; play_mood для настроения (например грустная музыка: query sad songs). play_from_playlist выбирает трек в текущем плейлисте по query или номеру track_number (от 1); playlist_query выбирает другой плейлист. volume_up/down/set_volume меняют только музыку Spotify. Не утверждай успех до результата инструмента.",
@@ -594,7 +634,7 @@ def make_config(enable_spotify=False):
     from google.genai import types
     return types.LiveConnectConfig(
         response_modalities=[types.Modality.AUDIO],
-        system_instruction=system_instruction() + " Для управления общей громкостью используй audio_volume; сообщай результат только после инструмента." + (
+        system_instruction=system_instruction() + " Для громкости используй audio_volume: обычные погромче/потише/громкость N — target=music; говори тише/громче — target=voice. Не меняй голос при просьбе изменить музыку. Сообщай результат только после инструмента." + (
             " Для музыкальных просьб используй spotify_command; настроение превращай в конкретный запрос плейлиста. Для выбора другой песни из текущего плейлиста используй play_from_playlist, чтобы сохранить очередь. Просьба включить исполнителя означает play_artist, а не play_track; Кизару — kizaru. Не заменяй запрошенного исполнителя другим. Сообщай имя и успех строго по результату инструмента; при несовпадении имени объясни ошибку, не заявляй, что включил запрошенного исполнителя."
             if enable_spotify else " Управление Spotify сейчас недоступно; не заявляй, что включил музыку."
         ),
