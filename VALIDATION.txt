@@ -37,3 +37,8 @@ Spotify routing, invalid voice values and near-speech cue rejection of clicks/DC
 Acoustic recognition, model wake reliability, early duck false triggers and actual relative
 loudness require board verification. Voice defaults to40% PCM gain; existing system master
 is unchanged. No new dependencies or hardware settings.
+
+Stabilization: 66 tests passed. Experimental model wake, duck and early duck default off.
+Disabled wake is absent from the schema and cannot authorize injected calls. Explicit local
+recording verified for right-channel samples, 16k mono WAV duration and 0600 permissions.
+Board recording, echo cause and playback artifact resolution remain unverified.

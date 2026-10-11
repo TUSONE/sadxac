@@ -59,11 +59,16 @@ SYSTEM_PROMPT = os.getenv(
 )
 
 
+def audio_wake_enabled():
+    return os.getenv("SLAVIK_AUDIO_WAKE", "0") == "1"
+
+
 def system_instruction():
     # Language codes bias server transcription; they do not enforce an ASR allowlist.
     language = """Поддерживаемые языки разговора: только русский и английский.
 Распознавай русскую и английскую речь, в том числе с акцентом. По умолчанию
-отвечай по-русски, на явно английскую реплику отвечай по-английски.
+отвечай по-русски. Переключай язык ответа на английский только по явной просьбе
+пользователя говорить по-английски. Случайная английская транскрипция не является такой просьбой.
 Имена «Славка», «Славик», «Славуха», Slavka, Slavik относятся к тебе;
 не принимай их за слова другого языка. Русские приветствия «салом», «салам», сленг «братуха» и английские названия
 песен не означают переход на третий язык. Не отвечай на других языках.
@@ -87,7 +92,7 @@ def system_instruction():
 Не вызывай wake_assistant для музыки, текста песни, своего голоса, посторонней речи
 или просто потому, что понял команду без обращения. При сомнении оставайся молчаливым.
 Не опирайся на написание имени в транскрипции, если само аудио понятно."""
-    return SYSTEM_PROMPT + "\n" + language + "\n" + mode + "\n" + audio_wake
+    return SYSTEM_PROMPT + "\n" + language + "\n" + mode + ("\n" + audio_wake if audio_wake_enabled() else "")
 
 
 def require_api_key() -> str:
@@ -402,7 +407,7 @@ async def conversation_focus(gate, player, capture=None):
     proc = None
     last_active = None
     try:
-        if os.getenv("SLAVIK_MUSIC_DUCK", "1") == "1" and os.getenv("SLAVIK_AUDIO_HELPER"):
+        if os.getenv("SLAVIK_MUSIC_DUCK", "0") == "1" and os.getenv("SLAVIK_AUDIO_HELPER"):
             proc = await asyncio.create_subprocess_exec(
                 "sudo", "-n", "-H", "-u", "voice", os.environ["SLAVIK_AUDIO_HELPER"], "duck",
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.DEVNULL,
@@ -411,7 +416,8 @@ async def conversation_focus(gate, player, capture=None):
             busy = not player.queue.empty() or time.monotonic() < player.audio_until + .12
             if busy:
                 gate.extend()
-            near = capture is not None and time.monotonic() < capture.near_speech.until
+            near = (os.getenv("SLAVIK_EARLY_DUCK", "0") == "1" and capture is not None
+                    and time.monotonic() < capture.near_speech.until)
             active = gate.awake or busy or near
             if proc and proc.returncode is not None:
                 print('[Audio] Приглушение недоступно: обновите аудиомост через bash install-linux.sh.', flush=True)
@@ -473,7 +479,7 @@ async def receiver(session, player, gate, tool_queue=None):
                 # same packet, independent of their order. A music call alone
                 # never bypasses the sleeping gate.
                 for call in calls:
-                    if call.name == "wake_assistant" and (call.args or {}).get("addressed") is True:
+                    if audio_wake_enabled() and call.name == "wake_assistant" and (call.args or {}).get("addressed") is True:
                         gate.extend()
                         gate.command_authorized = True
                         print("[Славик активирован по аудио]", flush=True)
@@ -525,7 +531,7 @@ async def tool_worker(session, queue, spotify, player=None):
                 result = "Команда отклонена: ассистент спит."
             elif call.name == "wake_assistant":
                 result = ("Обращение принято. Можно ответить и выполнить просьбу пользователя."
-                          if (call.args or {}).get("addressed") is True else "Явное обращение не подтверждено.")
+                          if audio_wake_enabled() and (call.args or {}).get("addressed") is True else "Явное обращение не подтверждено.")
             elif call.name == "audio_volume":
                 result = await route_volume(dict(call.args or {}), spotify, player)
             elif call.name != "spotify_command" or spotify is None:
@@ -638,7 +644,7 @@ def make_config(enable_spotify=False):
             " Для музыкальных просьб используй spotify_command; настроение превращай в конкретный запрос плейлиста. Для выбора другой песни из текущего плейлиста используй play_from_playlist, чтобы сохранить очередь. Просьба включить исполнителя означает play_artist, а не play_track; Кизару — kizaru. Не заменяй запрошенного исполнителя другим. Сообщай имя и успех строго по результату инструмента; при несовпадении имени объясни ошибку, не заявляй, что включил запрошенного исполнителя."
             if enable_spotify else " Управление Spotify сейчас недоступно; не заявляй, что включил музыку."
         ),
-        tools=[types.Tool(function_declarations=AUDIO_DECLARATIONS + (SPOTIFY_DECLARATIONS if enable_spotify else []))],
+        tools=[types.Tool(function_declarations=[d for d in AUDIO_DECLARATIONS if d["name"] != "wake_assistant" or audio_wake_enabled()] + (SPOTIFY_DECLARATIONS if enable_spotify else []))],
         speech_config=types.SpeechConfig(
             voice_config=types.VoiceConfig(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=VOICE)
@@ -754,6 +760,39 @@ async def calibrate_mic():
     print(f'Профиль сохранён: {path}. Он применяется при следующем запуске.', flush=True)
 
 
+async def record_mic(output_dir=None, seconds=12):
+    """Explicit local recording of the exact AEC channel before/after our DSP."""
+    import wave
+    import tempfile
+    from pathlib import Path
+    from contextlib import ExitStack
+    root = Path(output_dir) if output_dir else Path.home() / 'slavik-diagnostics'
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    folder = Path(tempfile.mkdtemp(prefix='mic-', dir=root))
+    capture = PulseCapture()
+    try:
+        with ExitStack() as stack:
+            writers = []
+            for name in ('aec-before-dsp.wav', 'sent-to-gemini.wav'):
+                handle = stack.enter_context(os.fdopen(os.open(folder / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'wb'))
+                writer = stack.enter_context(wave.open(handle, 'wb'))
+                writer.setnchannels(1)
+                writer.setsampwidth(2)
+                writer.setframerate(INPUT_RATE)
+                writers.append(writer)
+            print(f'[Запись] {seconds} секунд: говорите при музыке/ответе Славика. WAV сохраняются только локально.', flush=True)
+            await capture.start()
+            for _ in range(seconds * 1000 // INPUT_CHUNK_MS):
+                stereo = await asyncio.wait_for(capture.read_stereo(), 5)
+                mono = stereo_to_mono_channel(stereo, INPUT_SELECTED_CHANNEL)
+                writers[0].writeframesraw(mono)
+                writers[1].writeframesraw(capture.processor.process(mono))
+        print(f'[Запись готова] {folder}', flush=True)
+        return folder
+    finally:
+        await capture.close()
+
+
 async def entry(args):
     task = asyncio.current_task()
     loop = asyncio.get_running_loop()
@@ -780,6 +819,8 @@ async def entry(args):
                 if result.startswith("Не выполнено:"):
                     raise RuntimeError(result)
                 print(result)
+        elif args.record_mic:
+            await record_mic()
         elif args.aec_test:
             from aec_measurement import run_test
             await run_test(audio_command, stop_process)
@@ -799,6 +840,7 @@ def main():
     modes.add_argument("--audio-test", action="store_true")
     modes.add_argument("--mic-test", action="store_true")
     modes.add_argument("--aec-test", action="store_true")
+    modes.add_argument("--record-mic", action="store_true")
     modes.add_argument("--calibrate-mic", action="store_true")
     modes.add_argument("--spotify-login", action="store_true")
     modes.add_argument("--spotify-status", action="store_true")

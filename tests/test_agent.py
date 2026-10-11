@@ -149,12 +149,41 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
                 NS(name='spotify_command', id='music', args={'action': 'next'}),
                 NS(name='wake_assistant', id='wake', args={'addressed': addressed})])
             session = FakeSession([[event, message(b'answer', turn_complete=True)]])
-            with self.assertRaises(RuntimeError):
+            with patch.dict(a.os.environ, {"SLAVIK_AUDIO_WAKE": "1"}), self.assertRaises(RuntimeError):
                 await a.receiver(session, player, gate, queue)
             call, authorized = queue.get_nowait()
             self.assertEqual(call.id, 'music')
             self.assertEqual(authorized, addressed is True)
             self.assertEqual(bool(player.audio), addressed is True)
+
+    async def test_disabled_audio_wake_cannot_authorize_even_if_requested(self):
+        gate = a.WakeGate(wake_enabled=True)
+        queue = asyncio.Queue()
+        event = message(input_transcription=NS(text='Привет зай'))
+        event.tool_call = NS(function_calls=[NS(name='wake_assistant', id='wake', args={'addressed': True})])
+        with patch.dict(a.os.environ, {'SLAVIK_AUDIO_WAKE': '0'}):
+            config = a.make_config()
+            self.assertNotIn('wake_assistant', [d.name for d in config.tools[0].function_declarations])
+            with self.assertRaises(RuntimeError):
+                await a.receiver(FakeSession([[event]]), FakePlayer(), gate, queue)
+        self.assertFalse(queue.get_nowait()[1])
+        self.assertFalse(gate.awake)
+
+    async def test_local_recording_has_correct_samples_rate_and_permissions(self):
+        import tempfile
+        import wave
+        class Capture:
+            processor = NS(process=lambda raw: raw)
+            async def start(self): pass
+            async def close(self): pass
+            async def read_stereo(self): return struct.pack('<hh', 11, 22) * a.INPUT_FRAMES
+        with tempfile.TemporaryDirectory() as directory, patch.object(a, 'PulseCapture', Capture):
+            folder = await a.record_mic(directory, seconds=1)
+            for path in folder.iterdir():
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                with wave.open(str(path), 'rb') as f:
+                    self.assertEqual((f.getframerate(), f.getnchannels(), f.getnframes()), (16000, 1, 16000))
+                    self.assertEqual(f.readframes(1), struct.pack('<h', 22))
 
     async def test_music_call_alone_cannot_wake_from_bad_transcription(self):
         gate = a.WakeGate(wake_enabled=True)
