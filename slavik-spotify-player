@@ -1,0 +1,86 @@
+#!/usr/bin/python3
+"""Root-owned voice service supervisor. Supports native Pulse or PCM pipe fallback."""
+import re
+import signal
+import subprocess
+import sys
+
+
+def parse_backends(text):
+    return set(re.findall(r'^\s*-\s*(\w+)\b', text, re.MULTILINE))
+
+
+def available_backends(librespot='/usr/bin/librespot'):
+    result = subprocess.run([librespot, '--backend', '?'], capture_output=True,
+                            text=True, timeout=10, check=True)
+    return parse_backends(result.stdout)
+
+
+def commands(backends, librespot='/usr/bin/librespot', pacat='/usr/bin/pacat'):
+    if 'pulseaudio' in backends:
+        backend = ['--backend', 'pulseaudio', '--device', 'voice_aec_sink']
+        output = None
+    elif 'pipe' in backends:
+        backend = ['--backend', 'pipe']  # decoded PCM, not --passthrough compressed data
+        output = [pacat, '--playback', '--raw', '--device=voice_aec_sink',
+                  '--format=s16le', '--rate=44100', '--channels=2', '--latency-msec=80']
+    else:
+        raise RuntimeError('librespot has neither pulseaudio nor pipe backend')
+    music = [librespot, '--name', 'Slavik', *backend, '--format', 'S16',
+             '--bitrate', '160', '--initial-volume', '35', '--cache', '/var/lib/slavik-spotify']
+    return music, output
+
+
+def stop(proc):
+    if proc and proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+
+
+def run_player(librespot='/usr/bin/librespot', pacat='/usr/bin/pacat'):
+    music, output = commands(available_backends(librespot), librespot, pacat)
+    print('Spotify audio: ' + ('pipe PCM16/44100/stereo -> pacat -> AEC' if output else
+                               'native pulseaudio -> AEC'), flush=True)
+    sink = player = None
+    def interrupted(signum, frame):
+        raise SystemExit(128 + signum)
+    previous = {sig: signal.signal(sig, interrupted) for sig in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        if output:
+            sink = subprocess.Popen(output, stdin=subprocess.PIPE)
+            player = subprocess.Popen(music, stdout=sink.stdin)
+            sink.stdin.close()  # EOF must reach pacat when librespot closes its copy
+        else:
+            player = subprocess.Popen(music)
+        while True:
+            if sink and sink.poll() is not None and player.poll() is None:
+                print('Spotify audio sink exited unexpectedly', file=sys.stderr)
+                return 1
+            try:
+                result = player.wait(timeout=.2)
+                if sink:
+                    try:
+                        sink_result = sink.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        return 1
+                    if sink_result: return 1
+                return result
+            except subprocess.TimeoutExpired:
+                pass
+    finally:
+        stop(player)
+        stop(sink)
+        for sig, handler in previous.items(): signal.signal(sig, handler)
+
+
+if __name__ == '__main__':
+    try:
+        raise SystemExit(run_player())
+    except (RuntimeError, OSError, subprocess.SubprocessError) as error:
+        # No OAuth tokens or API responses are handled here.
+        print(f'Spotify player failed: {type(error).__name__}. Check installed backends and Pulse.', file=sys.stderr)
+        raise SystemExit(1)

@@ -2,6 +2,7 @@
 # Separate, deliberate installation: keeps Gemini and PipeWire configuration unchanged.
 set -euo pipefail
 umask 077
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 [[ $(id -un) == tusone ]] || { echo 'Run as tusone' >&2; exit 1; }
 case $(dpkg --print-architecture) in armhf|arm64|amd64|riscv64) ;; *) echo 'Unsupported architecture' >&2; exit 1;; esac
 voice_uid=$(id -u voice)
@@ -31,12 +32,15 @@ if ! command -v librespot >/dev/null; then
     sudo apt-get install -y raspotify
 fi
 [[ -x /usr/bin/librespot ]] || { echo 'Expected /usr/bin/librespot' >&2; exit 1; }
-# Check the installed binary, not just upstream build flags.
-/usr/bin/librespot --help > "$work/help.txt" 2>&1
-if ! grep -q pulseaudio "$work/help.txt"; then
-    echo 'Installed librespot lacks pulseaudio backend; no service has been changed.' >&2
+# --help describes options; --backend '?' lists actually compiled backends.
+/usr/bin/librespot --backend '?' > "$work/backends.txt"
+if ! grep -Eq '^[[:space:]]*-[[:space:]]*(pulseaudio|pipe)([[:space:]]|$)' "$work/backends.txt"; then
+    cat "$work/backends.txt"
+    echo 'Neither pulseaudio nor pipe backend available. No service has been changed.' >&2
     exit 1
 fi
+[[ -x /usr/bin/pacat ]] || { echo 'Install pulseaudio-utils first' >&2; exit 1; }
+[[ -f "$script_dir/slavik-spotify-player" ]] || { echo 'Missing slavik-spotify-player; update the checkout' >&2; exit 1; }
 cat > "$work/slavik-spotify.service" <<UNIT
 [Unit]
 Description=Slavik Spotify Connect via voice AEC
@@ -50,7 +54,7 @@ Environment=PULSE_SERVER=unix:/run/user/$voice_uid/pulse/native
 StateDirectory=slavik-spotify
 StateDirectoryMode=0700
 UMask=0077
-ExecStart=/usr/bin/librespot --name Slavik --backend pulseaudio --device voice_aec_sink --format S16 --bitrate 160 --initial-volume 35 --cache /var/lib/slavik-spotify
+ExecStart=/usr/local/libexec/slavik-spotify-player
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
@@ -58,6 +62,12 @@ ProtectSystem=strict
 [Install]
 WantedBy=multi-user.target
 UNIT
+sudo install -d -m 755 /usr/local/libexec
+if sudo test -f /usr/local/libexec/slavik-spotify-player; then
+    mkdir -p "$HOME/slavik-backups"
+    sudo cat /usr/local/libexec/slavik-spotify-player > "$HOME/slavik-backups/slavik-spotify-player-$(date +%Y%m%d-%H%M%S)-$$"
+fi
+sudo install -o root -g root -m 755 "$script_dir/slavik-spotify-player" /usr/local/libexec/slavik-spotify-player
 sudo systemd-analyze verify "$work/slavik-spotify.service" || { echo 'Service verification failed' >&2; exit 1; }
 if sudo test -f /etc/systemd/system/slavik-spotify.service; then
     mkdir -p "$HOME/slavik-backups"

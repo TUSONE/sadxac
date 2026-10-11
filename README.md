@@ -194,7 +194,13 @@ next/previous, volume ±10%. `radio` не реализовано и возвра
    пакетов. Требуется совместимый Debian/Armbian ARMv7 (armhf); upstream сейчас
    ориентирован на Debian 13. При несовместимости пакетов установка должна
    остановиться: не отключайте проверки или зависимости.
-   Скрипт проверяет наличие pulseaudio backend в установленном librespot.
+   Скрипт проверяет backend’ы командой `librespot --backend '?'`, а не через
+   `--help`. При наличии pulseaudio использует его напрямую; иначе выбирает
+   pipe и передаёт decoded PCM16 44.1 кГц stereo в pacat → voice_aec_sink.
+   Пересборка librespot не нужна, если есть хотя бы pulseaudio или pipe.
+   Root-owned помощник `/usr/local/libexec/slavik-spotify-player` следит за обоими
+   процессами и завершает их при остановке службы. Pulse выполняет преобразование
+   частоты музыкального потока для AEC; формат аудио Gemini не меняется.
    Он отключает пакетную службу raspotify и создаёт отдельную `slavik-spotify`
    от `voice`, выход — `voice_aec_sink`. Конфигурация Gemini/AEC не меняется.
    Музыка через Pulse попадает в тот же AEC reference; не выводите её напрямую ALSA.
