@@ -26,6 +26,13 @@ class ConnectTests(unittest.TestCase):
         self.assertIn('voice_aec_sink', native)
         with self.assertRaises(RuntimeError): a.commands({'alsa'})
 
+    def test_local_fix_is_preferred_without_replacing_package_binary(self):
+        with patch.object(a.os.path, 'isfile', return_value=True), patch.object(a.os, 'access', return_value=True), \
+             patch.object(a, 'check_temp_directory'), patch.object(a, 'available_backends', side_effect=RuntimeError('stop')) as probe:
+            with self.assertRaisesRegex(RuntimeError, 'stop'):
+                a.run_player()
+        probe.assert_called_once_with('/usr/local/libexec/slavik-librespot')
+
     def test_configured_scratch_must_work_without_fallback(self):
         with tempfile.TemporaryDirectory() as directory:
             with patch.dict(os.environ, {'TMPDIR': directory}):

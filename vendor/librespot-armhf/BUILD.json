@@ -1,0 +1,22 @@
+{
+  "upstream": "https://github.com/librespot-org/librespot",
+  "revision": "939dc5ee9d833e1980f9495241219d9d4868a061",
+  "target": "armv7-unknown-linux-gnueabihf",
+  "rust": "1.99.0",
+  "features": [
+    "pulseaudio-backend",
+    "with-libmdns",
+    "rustls-tls-native-roots"
+  ],
+  "patch_sha256": "ba3932dc9d695f27acfeed70045cd9a1492f4d7f143293076c7cebfb8518842e",
+  "cargo_lock_sha256": "d6836e414a855bba63a87ff92f7659d34102b5f08501ffe7b1fd6258ce9627f1",
+  "binary_sha256": "23fdc152fa2f19b7daca814a5562cc2ac1277d92f5ae2e840ace8f70278b782f",
+  "validation": [
+    "4 native Rust regression tests passed",
+    "ARMv7 release build completed",
+    "ELF hard-float inspected",
+    "QEMU Cortex-A7 smoke: --version and --backend ? passed; pulseaudio/pipe/subprocess present"
+  ],
+  "hardware_playback_tested": false,
+  "build_id": "r7bGiOLm"
+}

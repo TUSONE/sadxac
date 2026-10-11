@@ -55,8 +55,12 @@ def check_temp_directory():
                            'check TMPDIR and RuntimeDirectory in slavik-spotify.service') from None
 
 
-def run_player(librespot='/usr/bin/librespot', pacat='/usr/bin/pacat'):
+def run_player(librespot=None, pacat='/usr/bin/pacat'):
+    if librespot is None:
+        local = '/usr/local/libexec/slavik-librespot'
+        librespot = local if os.path.isfile(local) and os.access(local, os.X_OK) else '/usr/bin/librespot'
     check_temp_directory()
+    print('Spotify executable: ' + librespot, flush=True)
     music, output = commands(available_backends(librespot), librespot, pacat)
     print('Spotify audio: ' + ('pipe PCM16/44100/stereo -> pacat -> AEC' if output else
                                'native pulseaudio -> AEC'), flush=True)

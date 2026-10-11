@@ -45,6 +45,7 @@ def snapshot():
     report = {'time': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
               'revision': command(['git', 'rev-parse', '--short', 'HEAD']),
               'librespot': command(['/usr/bin/librespot', '--version']),
+              'local_librespot': command(['/usr/local/libexec/slavik-librespot', '--version']),
               'service': command(['systemctl', 'show', 'slavik-spotify', '-p', 'ActiveState',
                                   '-p', 'SubState', '-p', 'NRestarts', '-p', 'MainPID']),
               'processes': command(['ps', '-eo', 'pid,comm,pcpu,pmem', '--sort=-pcpu']),

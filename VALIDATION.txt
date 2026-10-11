@@ -1,8 +1,13 @@
 Local validation: Linux x86_64, Python 3.12.14, google-genai 2.29.0
-48 unittest checks passed: PCM, wake at any position/5s idle timer, delayed command authorization, initial language-hint fallback, microphone DSP/calibration, Spotify PKCE/refresh/targeting, playlist context selection/pagination, mood playlist lookup, master-volume bridge validation/clamping, diagnostic allowlists/error bounds and Spotify status with/without playback.
+49 unittest checks passed: PCM, wake at any position/5s idle timer, delayed command authorization, initial language-hint fallback, microphone DSP/calibration, Spotify PKCE/refresh/targeting, playlist context selection/pagination, mood playlist lookup, master-volume bridge validation/clamping, diagnostic allowlists/error bounds and Spotify status with/without playback.
 SDK LiveConnectConfig validated with RU/EN hints, audio_volume and Spotify function declarations.
 Python AST parsing, bash -n and git diff --check passed. No dependency changes.
 User confirmed 48kHz stereo playback and Spotify music on the board before this update.
 Not executed for this update: ARMv7 installation, actual mixer changes, Pulse volume changes, microphone calibration/recognition, live Gemini tool calls, Spotify API playlist selection and OAuth scopes. These require validation on the user's board/account.
 Diagnostic commands, actual Pulse snapshot, API next and Live event logging require verification on the board.
 Timeout uncertainty/no-retry tested; scoped Connect debug script syntax checked.
+
+Connect empty skip-target fix: 4 Rust regression tests passed against upstream 939dc5e.
+ARMv7 GNU hard-float release built with Rust 1.99.0 and locked dependencies; readelf confirmed ELF32 ARM hard-float.
+QEMU Cortex-A7 executed --version and --backend ?: PulseAudio, pipe and subprocess available. Build ID r7bGiOLm.
+Installer and rebuild script bash syntax checked. Compressed artifact checksums verified. Board installation and actual desktop UID selection remain unverified pending user test.

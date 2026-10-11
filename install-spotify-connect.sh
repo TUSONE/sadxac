@@ -32,8 +32,11 @@ if ! command -v librespot >/dev/null; then
     sudo apt-get install -y raspotify
 fi
 [[ -x /usr/bin/librespot ]] || { echo 'Expected /usr/bin/librespot' >&2; exit 1; }
+# Prefer the reviewed local Connect fix when installed.
+librespot_binary=/usr/bin/librespot
+[[ ! -x /usr/local/libexec/slavik-librespot ]] || librespot_binary=/usr/local/libexec/slavik-librespot
 # --help describes options; --backend '?' lists actually compiled backends.
-/usr/bin/librespot --backend '?' > "$work/backends.txt"
+"$librespot_binary" --backend '?' > "$work/backends.txt"
 if ! grep -Eq '^[[:space:]]*-[[:space:]]*(pulseaudio|pipe)([[:space:]]|$)' "$work/backends.txt"; then
     cat "$work/backends.txt"
     echo 'Neither pulseaudio nor pipe backend available. No service has been changed.' >&2

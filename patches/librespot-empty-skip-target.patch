@@ -1,0 +1,72 @@
+diff --git a/connect/src/model.rs b/connect/src/model.rs
+index 10f25f1..4060381 100644
+--- a/connect/src/model.rs
++++ b/connect/src/model.rs
+@@ -135,9 +135,9 @@ impl TryFrom<SkipTo> for PlayingTrack {
+     fn try_from(value: SkipTo) -> Result<Self, Self::Error> {
+         // order of checks is important, as the index can be 0, but still has an uid or uri provided,
+         // so we only use the index as last resort
+-        if let Some(uri) = value.track_uri {
++        if let Some(uri) = value.track_uri.filter(|uri| !uri.trim().is_empty()) {
+             Ok(PlayingTrack::Uri(uri))
+-        } else if let Some(uid) = value.track_uid {
++        } else if let Some(uid) = value.track_uid.filter(|uid| !uid.trim().is_empty()) {
+             Ok(PlayingTrack::Uid(uid))
+         } else if let Some(index) = value.track_index {
+             Ok(PlayingTrack::Index(index))
+@@ -165,3 +165,55 @@ pub(super) enum SpircPlayStatus {
+         preloading_of_next_track_triggered: bool,
+     },
+ }
++
++#[cfg(test)]
++mod skip_to_tests {
++    use super::*;
++
++    #[test]
++    fn empty_uri_does_not_hide_uid() {
++        let skip = SkipTo {
++            track_uri: Some(String::new()),
++            track_uid: Some("selected-uid".into()),
++            track_index: None,
++        };
++        assert!(
++            matches!(PlayingTrack::try_from(skip), Ok(PlayingTrack::Uid(uid)) if uid == "selected-uid")
++        );
++    }
++
++    #[test]
++    fn empty_identifiers_do_not_hide_index() {
++        let skip = SkipTo {
++            track_uri: Some(" ".into()),
++            track_uid: Some(String::new()),
++            track_index: Some(2),
++        };
++        assert!(matches!(
++            PlayingTrack::try_from(skip),
++            Ok(PlayingTrack::Index(2))
++        ));
++    }
++
++    #[test]
++    fn real_uri_keeps_precedence() {
++        let skip = SkipTo {
++            track_uri: Some("spotify:track:selected".into()),
++            track_uid: Some("uid".into()),
++            track_index: Some(2),
++        };
++        assert!(
++            matches!(PlayingTrack::try_from(skip), Ok(PlayingTrack::Uri(uri)) if uri == "spotify:track:selected")
++        );
++    }
++
++    #[test]
++    fn missing_target_is_rejected() {
++        let skip = SkipTo {
++            track_uri: Some(String::new()),
++            track_uid: Some(String::new()),
++            track_index: None,
++        };
++        assert!(PlayingTrack::try_from(skip).is_err());
++    }
++}
