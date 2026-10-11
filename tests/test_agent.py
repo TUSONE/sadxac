@@ -59,7 +59,7 @@ class VolumeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(player.voice_percent, 30)
         self.assertEqual(len(called), 1)
         raw = struct.pack('<hh', 10000, -10000)
-        self.assertEqual(struct.unpack('<hh', player.scale_voice(raw)), (3000, -3000))
+        self.assertEqual(struct.unpack('<hh', player.scale_voice(raw)), (270, -270))
         for value in (-1, 101, True, '50'):
             self.assertIn('Не выполнено', player.voice_volume({'action': 'set', 'percent': value}))
         self.assertEqual(player.voice_percent, 30)

@@ -68,3 +68,7 @@ actual intelligibility remain unverified. No Python application/dependency chang
 closure, capture WAVs preserve physical stereo versus AEC mono formats and permissions.
 Tool results now visible without DEBUG_EVENTS. Live model response wording, actual pause
 contradiction and far-field intelligibility remain unverified; audio recordings required.
+
+72 tests passed: persisted duck crash recovery avoids cumulative attenuation; voice
+PCM scaling uses Pulse-compatible cubic curve. music-levels.sh bash syntax checked.
+Actual stream levels and cause of reported low music remain unverified until board use.

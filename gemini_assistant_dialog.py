@@ -333,7 +333,7 @@ class PulsePlayer:
         values.frombytes(data)
         if sys.byteorder != "little":
             values.byteswap()
-        output = array("h", (round(x * self.voice_percent / 100) for x in values))
+        output = array("h", (round(x * (self.voice_percent / 100) ** 3) for x in values))
         if sys.byteorder != "little":
             output.byteswap()
         return output.tobytes()

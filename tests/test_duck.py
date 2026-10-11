@@ -24,6 +24,23 @@ class DuckTests(unittest.TestCase):
         d.update([stream(volume=reduced)], False)
         self.assertEqual(calls[-1], (1, [65536, 65536]))
 
+    def test_crash_recovery_prevents_repeated_attenuation(self):
+        import tempfile
+        from pathlib import Path
+        from music_duck import StateStore
+        with tempfile.TemporaryDirectory() as directory:
+            store = StateStore(Path(directory) / 'state.json')
+            calls = []
+            first = Ducker(lambda *args: calls.append(args), store)
+            first.update([stream()], True)
+            reduced = calls[-1][1][0]
+            # Simulate process loss: no cleanup; a new process reloads its journal.
+            recovered = Ducker(lambda *args: calls.append(args), store)
+            recovered.update([stream(volume=reduced)], False)
+            self.assertEqual(calls[-1], (1, [65536, 65536]))
+            recovered.update([stream()], True)
+            self.assertEqual(calls[-1], (1, [reduced, reduced]))
+
     def test_manual_volume_and_reused_stream_id_are_not_overwritten(self):
         for replacement in (stream(volume=20000), stream(pid='200')):
             calls = []
@@ -122,7 +139,7 @@ class ServiceTests(unittest.TestCase):
              patch.object(music_duck.select, 'select', return_value=([music_duck.sys.stdin], [], [])), \
              patch.object(music_duck.os, 'read', side_effect=[b'on\n', b'']), \
              patch.object(music_duck.signal, 'signal'):
-            music_duck.serve({})
+            music_duck._serve({}, None)
         changes = [c for c in calls if 'set-sink-input-volume' in c]
         self.assertEqual(len(changes), 2)
         self.assertLess(int(changes[0][-1]), 65536)
