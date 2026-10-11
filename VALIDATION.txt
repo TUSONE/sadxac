@@ -1,0 +1,6 @@
+Local validation: Linux x86_64, Python 3.12.14, google-genai 2.29.0
+15 unittest checks passed.
+SDK LiveConnectConfig validated, including optional Spotify tool schema.
+pip check passed.
+Python AST parsing, bash -n, UTF-8 without BOM / LF checks passed.
+Not executed: Windows PowerShell installer, Linux deployment on ARMv7, voice Pulse/sudo helper, hardware audio/AEC, real Gemini session, Spotify bridge.
