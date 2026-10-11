@@ -11,3 +11,11 @@ Connect empty skip-target fix: 4 Rust regression tests passed against upstream 9
 ARMv7 GNU hard-float release built with Rust 1.99.0 and locked dependencies; readelf confirmed ELF32 ARM hard-float.
 QEMU Cortex-A7 executed --version and --backend ?: PulseAudio, pipe and subprocess available. Build ID r7bGiOLm.
 Installer and rebuild script bash syntax checked. Compressed artifact checksums verified. Board installation and actual desktop UID selection remain unverified pending user test.
+
+Voice/music follow-up: 54 Python unit tests passed, including wrong-first artist rejection,
+Kizaru Cyrillic spelling, ambiguous artist no-playback, and channel-specific AEC measurement clipping.
+Added guided --aec-test; no audio recordings, Gemini calls or automatic playback changes.
+Shell syntax validated for tune-audio.sh and revised set-output-max.sh.
+User confirmed manual Connect track switching after the previous binary patch.
+Hardware level changes and their recognition/AEC effects are NOT verified in cloud;
+require board tune, recalibration, AEC_REPORT and live voice test. No dependency changes.

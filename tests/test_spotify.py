@@ -29,6 +29,29 @@ class SpotifyTests(unittest.TestCase):
         self.assertIn('принял', result)
         self.assertEqual(calls[-1], ('PUT','/me/player/play', {'uris':['spotify:track:abc']}, {'device_id':'target'}))
 
+    def test_artist_search_skips_unrelated_first_result(self):
+        calls = []
+        def api(method, path, data=None, params=None):
+            calls.append((method, path, data, params))
+            if path == '/search':
+                return {'artists': {'items': [
+                    {'name': 'FACE', 'uri': 'spotify:artist:face'},
+                    {'name': 'kizaru', 'uri': 'spotify:artist:kizaru'}]}}
+        with patch.object(s, 'device_id', return_value='target'), patch.object(s, 'api', api):
+            result = s.spotify_command({'action': 'play_artist', 'query': 'Кизару'})
+        self.assertIn('kizaru', result)
+        self.assertEqual(calls[0][3]['q'], 'kizaru')
+        self.assertEqual(calls[-1][2], {'context_uri': 'spotify:artist:kizaru'})
+
+    def test_unrelated_or_ambiguous_artist_never_changes_playback(self):
+        for items in ([{'name': 'FACE', 'uri': 'spotify:artist:face'}],
+                      [{'name': 'kizaru', 'uri': 'spotify:artist:a'},
+                       {'name': 'Kizaru', 'uri': 'spotify:artist:b'}]):
+            with self.subTest(items=items), patch.object(s, 'device_id', return_value='target'), patch.object(s, 'api', return_value={'artists': {'items': items}}) as api:
+                result = s.spotify_command({'action': 'play_artist', 'query': 'Kizaru'})
+                self.assertIn('Не выполнено', result)
+                self.assertTrue(all(call.args[0] == 'GET' for call in api.call_args_list))
+
     def test_never_plays_on_unrelated_device_or_after_search_failure(self):
         with patch.object(s, 'api', return_value={'devices':[{'name':'Phone','id':'other'}]}) as api:
             result = s.spotify_command({'action':'play_track','query':'Song'})

@@ -166,9 +166,9 @@ class Resampler:
         return out.tobytes()
 
 
-def audio_command(mode):
+def audio_command(mode, device=None):
     helper = os.getenv("SLAVIK_AUDIO_HELPER")
-    device = MIC_SOURCE if mode == "capture" else SPEAKER_SINK
+    device = device or (MIC_SOURCE if mode == "capture" else SPEAKER_SINK)
     if helper:
         return ["sudo", "-n", "-H", "-u", "voice", helper, mode, device]
     if mode == "capture":
@@ -393,7 +393,8 @@ async def receiver(session, player, gate, tool_queue=None):
                         gate.clear_turn_text()
             if tool_queue is not None and getattr(response, "tool_call", None):
                 for call in response.tool_call.function_calls or []:
-                    event_log("tool_received", tool=call.name, id=call.id, authorized=gate.response_allowed)
+                    event_log("tool_received", tool=call.name, id=call.id, authorized=gate.response_allowed,
+                              action=(call.args or {}).get("action"), query=(call.args or {}).get("query"))
                     tool_queue.put_nowait((call, gate.response_allowed))
             # Freeze the gate for each model turn. Never release old hidden audio
             # after a later wake word, and never truncate an authorized long reply.
@@ -548,7 +549,7 @@ def make_config(enable_spotify=False):
     return types.LiveConnectConfig(
         response_modalities=[types.Modality.AUDIO],
         system_instruction=system_instruction() + " Для управления общей громкостью используй audio_volume; сообщай результат только после инструмента." + (
-            " Для музыкальных просьб используй spotify_command; настроение превращай в конкретный запрос плейлиста. Для выбора другой песни из текущего плейлиста используй play_from_playlist, чтобы сохранить очередь. Сообщай об успехе только по результату инструмента."
+            " Для музыкальных просьб используй spotify_command; настроение превращай в конкретный запрос плейлиста. Для выбора другой песни из текущего плейлиста используй play_from_playlist, чтобы сохранить очередь. Просьба включить исполнителя означает play_artist, а не play_track; Кизару — kizaru. Не заменяй запрошенного исполнителя другим. Сообщай имя и успех строго по результату инструмента; при несовпадении имени объясни ошибку, не заявляй, что включил запрошенного исполнителя."
             if enable_spotify else " Управление Spotify сейчас недоступно; не заявляй, что включил музыку."
         ),
         tools=[types.Tool(function_declarations=AUDIO_DECLARATIONS + (SPOTIFY_DECLARATIONS if enable_spotify else []))],
@@ -693,6 +694,9 @@ async def entry(args):
                 if result.startswith("Не выполнено:"):
                     raise RuntimeError(result)
                 print(result)
+        elif args.aec_test:
+            from aec_measurement import run_test
+            await run_test(audio_command, stop_process)
         elif args.calibrate_mic:
             await calibrate_mic()
         else:
@@ -708,6 +712,7 @@ def main():
     modes.add_argument("--diagnose", action="store_true")
     modes.add_argument("--audio-test", action="store_true")
     modes.add_argument("--mic-test", action="store_true")
+    modes.add_argument("--aec-test", action="store_true")
     modes.add_argument("--calibrate-mic", action="store_true")
     modes.add_argument("--spotify-login", action="store_true")
     modes.add_argument("--spotify-status", action="store_true")

@@ -12,6 +12,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import unicodedata
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -179,6 +180,13 @@ def device_id():
     return matches[0]['id']
 
 
+def artist_key(name):
+    # Explicit spoken spelling, not a fuzzy match to an unrelated performer.
+    value = unicodedata.normalize('NFKC', name).casefold().strip()
+    aliases = {'кизару': 'kizaru', 'кизары': 'kizaru'}
+    return aliases.get(value, value)
+
+
 def search_uri(kind, query):
     if not isinstance(query, str) or not query.strip() or len(query) > 300:
         raise SpotifyError('Нужно название трека, исполнителя или плейлиста.')
@@ -207,11 +215,24 @@ def search_uri(kind, query):
                 break
         if len(matches) == 1:
             return matches[0]
-    result = api('GET', '/search', params={'q': query, 'type': kind, 'limit': 1}) or {}
+    search_query = artist_key(query) if kind == 'artist' else query
+    result = api('GET', '/search', params={'q': search_query, 'type': kind,
+                                         'limit': 10 if kind == 'artist' else 1}) or {}
     items = result.get(kind + 's', {}).get('items', [])
+    if kind == 'artist':
+        matches = [item for item in items if item and item.get('uri') and
+                   artist_key(item.get('name', '')) == search_query]
+        if len(matches) != 1:
+            raise SpotifyError(f'Исполнитель {query!r} не найден однозначно. Уточните имя; другой исполнитель не включён.')
+        return matches[0]['uri'], matches[0]['name']
     if not items or not items[0] or not items[0].get('uri'):
         raise SpotifyError('Spotify ничего не нашёл по этому запросу.')
-    return items[0]['uri'], items[0].get('name', query)
+    name = items[0].get('name', query)
+    if kind == 'track':
+        artists = ', '.join(a['name'] for a in items[0].get('artists', []) if a and a.get('name'))
+        if artists:
+            name += f' — {artists}'
+    return items[0]['uri'], name
 
 
 def playlist_selection(args, selected=None):
