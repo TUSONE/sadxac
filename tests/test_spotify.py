@@ -7,6 +7,28 @@ from unittest.mock import patch
 import spotify_api as s
 
 class SpotifyTests(unittest.TestCase):
+    def test_pause_confirms_track_position_and_does_not_repeat_mutation(self):
+        current = {'device': {'id': 'target', 'name': 'Slavik', 'volume_percent': 30},
+                   'is_playing': False, 'progress_ms': 65000,
+                   'item': {'name': 'Song', 'artists': [{'name': 'Artist'}], 'duration_ms': 180000}}
+        for response in (None, s.SpotifyError('Таймаут Spotify. Команда могла быть принята; проверьте статус.')):
+            with patch.object(s, 'device_id', return_value='target'), patch.object(s, 'api', side_effect=[response, current]) as api:
+                text = s.spotify_command({'action': 'pause'})
+            self.assertIn('Подтверждено: пауза', text)
+            self.assertIn('1:05 из 3:00', text)
+            self.assertIn('Artist', text)
+            self.assertEqual([c.args[0] for c in api.call_args_list], ['PUT', 'GET'])
+
+    def test_post_command_read_failure_is_not_reported_as_command_failure(self):
+        for current in (s.SpotifyError('Spotify HTTP 503'),
+                        {'device': {'id': 'other', 'name': 'Desktop'}, 'is_playing': False},
+                        {'device': {'id': 'target'}, 'is_playing': True}):
+            with patch.object(s, 'device_id', return_value='target'), patch.object(s, 'api', side_effect=[None, current]):
+                text = s.spotify_command({'action': 'pause'})
+            self.assertIn('принял', text)
+            self.assertNotIn('Не выполнено', text)
+            self.assertNotIn('Подтверждено: пауза', text)
+
     def test_pkce_rfc7636_vector(self):
         self.assertEqual(s.pkce('dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk'),
                          'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM')

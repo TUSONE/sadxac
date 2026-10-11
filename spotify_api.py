@@ -299,6 +299,41 @@ def playlist_selection(args, selected=None):
     return {'context_uri': uri, 'offset': {'position': position}}, name
 
 
+def playback_summary(current):
+    device = current.get('device') or {}
+    track = current.get('item') or {}
+    if not device:
+        return 'Снимок Spotify: активного воспроизведения нет.'
+    def duration(value):
+        if not isinstance(value, (int, float)):
+            return 'неизвестно'
+        minutes, seconds = divmod(max(0, int(value)) // 1000, 60)
+        return f'{minutes}:{seconds:02}'
+    artists = ', '.join(a.get('name', '?') for a in track.get('artists', []))
+    state = 'играет' if current.get('is_playing') is True else 'пауза' if current.get('is_playing') is False else 'неизвестно'
+    return (f"Снимок на момент проверки {time.strftime('%H:%M:%S UTC', time.gmtime())}: "
+            f"устройство {device.get('name', '?')}; {state}; "
+            f"{track.get('name', 'трек неизвестен')} — {artists or 'исполнитель неизвестен'}; "
+            f"позиция {duration(current.get('progress_ms'))} из {duration(track.get('duration_ms'))}; "
+            f"громкость музыки {device.get('volume_percent', '?')}%. "
+            "Для нового вопроса о текущем моменте снова запроси status, не угадывай по старому снимку.")
+
+
+def confirm_transport(action, selected, accepted=True):
+    prefix = ('Spotify принял команду: ' + action + '. ' if accepted else
+              'Ответ на команду потерян; выполнена проверка состояния. ')
+    try:
+        current = api('GET', '/me/player') or {}
+    except SpotifyError:
+        return prefix + 'Состояние прочитать не удалось; это не доказывает отказ команды.'
+    if (current.get('device') or {}).get('id') != selected:
+        return prefix + 'Состояние выбранного устройства пока не подтверждено. ' + playback_summary(current)
+    expected = action == 'resume'
+    if current.get('is_playing') is expected:
+        return prefix + ('Подтверждено: воспроизведение.' if expected else 'Подтверждено: пауза.') + ' ' + playback_summary(current)
+    return prefix + 'Снимок пока не подтверждает ожидаемое состояние; не утверждай отказ или успех исполнения. ' + playback_summary(current)
+
+
 def spotify_command(args):
     try:
         action = args.get('action')
@@ -313,6 +348,7 @@ def spotify_command(args):
             lines.extend(f"  {d.get('name', '?')}: active={d.get('is_active')}, restricted={d.get('is_restricted')}, volume={d.get('volume_percent')}, supports_volume={d.get('supports_volume')}" for d in available)
             lines.append(f"Активное: {device.get('name', 'нет')}; playing={current.get('is_playing')}; progress_ms={current.get('progress_ms')}; shuffle={current.get('shuffle_state')}; repeat={current.get('repeat_state')}")
             lines.append(f"Трек: {track.get('name', 'нет')}; uri={track.get('uri')}; context={context.get('uri')}")
+            lines.append(playback_summary(current))
             lines.append('Ограничения действий: ' + ', '.join(k for k, v in (current.get('actions') or {}).get('disallows', {}).items() if v))
             return '\n'.join(lines)
         supported = {'play_track', 'play_artist', 'play_playlist', 'pause', 'stop', 'resume',
@@ -356,7 +392,14 @@ def spotify_command(args):
             'pause': ('PUT', 'pause'), 'stop': ('PUT', 'pause'), 'resume': ('PUT', 'play'),
             'next': ('POST', 'next'), 'previous': ('POST', 'previous'),
         }[action]
-        api(method, '/me/player/' + path, params=params)
+        try:
+            api(method, '/me/player/' + path, params=params)
+        except SpotifyError as error:
+            if action in ('pause', 'stop', 'resume') and 'могла быть принята' in str(error):
+                return confirm_transport(action, selected, accepted=False)
+            raise
+        if action in ('pause', 'stop', 'resume'):
+            return confirm_transport(action, selected)
         return 'Spotify принял команду: ' + action + '.'
     except SpotifyError as error:
         message = str(error)
@@ -366,7 +409,7 @@ def spotify_command(args):
             message = 'Spotify не видит активного Connect-плеера. Выберите Slavik в приложении Spotify.'
         elif message == 'Spotify HTTP 429':
             message = 'Лимит запросов Spotify. Подождите перед следующей командой.'
-        return 'Не выполнено: ' + message
+        return ('Результат не подтверждён: ' if 'могла быть принята' in message else 'Не выполнено: ') + message
 
 
 def main():

@@ -47,3 +47,9 @@ Board recording, echo cause and playback artifact resolution remain unverified.
 flushes a blocked writer, duck requires explicit address and restores after window even
 when a legacy early-duck flag and simulated noise cue are present. trace-audio.sh bash
 syntax checked; actual pw-top capture and music dropout resolution require board data.
+
+70 tests pass. Added transport readback after accepted pause and after uncertain timeout,
+no repeated mutation, timestamped track/artist/position/duration summary, readback failure
+and wrong-device/stale-state handling. Runtime quantum script bash syntax checked.
+User report establishes rapidly increasing PipeWire graph errors; no board execution of
+1024 quantum or demonstrated ASR improvement yet. Journal permission issue addressed.

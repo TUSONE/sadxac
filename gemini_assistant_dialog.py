@@ -545,7 +545,7 @@ async def tool_worker(session, queue, spotify, player=None):
                 try:
                     result = await asyncio.to_thread(spotify, dict(call.args or {}))
                 except Exception:
-                    result = "Spotify не выполнил команду. Проверьте мост и авторизацию."
+                    result = "Не удалось обработать результат Spotify. Команда могла выполниться; запроси status перед выводом или повтором."
             event_log("tool_result", tool=call.name, id=call.id, result=result)
             await session.send_tool_response(function_responses=[types.FunctionResponse(
                 id=call.id, name=call.name, response={"result": result})])
@@ -646,7 +646,7 @@ def make_config(enable_spotify=False):
     return types.LiveConnectConfig(
         response_modalities=[types.Modality.AUDIO],
         system_instruction=system_instruction() + " Для громкости используй audio_volume: обычные погромче/потише/громкость N — target=music; говори тише/громче — target=voice. Не меняй голос при просьбе изменить музыку. Сообщай результат только после инструмента." + (
-            " Для музыкальных просьб используй spotify_command; настроение превращай в конкретный запрос плейлиста. Для выбора другой песни из текущего плейлиста используй play_from_playlist, чтобы сохранить очередь. Просьба включить исполнителя означает play_artist, а не play_track; Кизару — kizaru. Не заменяй запрошенного исполнителя другим. Сообщай имя и успех строго по результату инструмента; при несовпадении имени объясни ошибку, не заявляй, что включил запрошенного исполнителя."
+            " Для музыкальных просьб используй spotify_command. На вопросы что играет, кто исполнитель, какой момент, стоит ли пауза ВСЕГДА сначала вызывай action=status; сообщай устройство, трек, исполнителя и позицию по свежему результату. Не считай принятую команду отказом из-за ошибки чтения статуса. Подтверждённую паузу называй паузой; при неопределённом результате честно сообщай, что подтверждения нет. Не говори о невозможности действия до получения результата инструмента; настроение превращай в конкретный запрос плейлиста. Для выбора другой песни из текущего плейлиста используй play_from_playlist, чтобы сохранить очередь. Просьба включить исполнителя означает play_artist, а не play_track; Кизару — kizaru. Не заменяй запрошенного исполнителя другим. Сообщай имя и успех строго по результату инструмента; при несовпадении имени объясни ошибку, не заявляй, что включил запрошенного исполнителя."
             if enable_spotify else " Управление Spotify сейчас недоступно; не заявляй, что включил музыку."
         ),
         tools=[types.Tool(function_declarations=[d for d in AUDIO_DECLARATIONS if d["name"] != "wake_assistant" or audio_wake_enabled()] + (SPOTIFY_DECLARATIONS if enable_spotify else []))],

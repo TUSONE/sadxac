@@ -9,6 +9,7 @@ umask 077
 mkdir -p "$HOME/slavik-diagnostics"
 report=$(mktemp -d "$HOME/slavik-diagnostics/runtime-XXXXXX")
 started=$(date --iso-8601=seconds)
+git -C "$(dirname -- "${BASH_SOURCE[0]}")" rev-parse HEAD > "$report/revision.txt" 2>&1 || true
 printf '20 секунд наблюдения. Оставьте музыку включённой; в другом окне остановите/запустите Славика при слышимом обрыве.\nКаталог: %s\n' "$report"
 ps -eLo pid,tid,cls,rtprio,pri,ni,psr,pcpu,comm > "$report/scheduling-before.txt"
 "${voice_env[@]}" timeout 5 pw-metadata -n settings > "$report/settings.txt" 2>&1 || true
@@ -22,8 +23,7 @@ for sample in $(seq 1 20); do
     sleep 1
 done > "$report/load.txt"
 wait "$top_pid" || printf 'pw-top не завершился успешно; смотрите pw-top.txt.\n'
-"${voice_env[@]}" timeout 8 journalctl --user -u pipewire -u pipewire-pulse -u wireplumber \
-    --since "$started" -n 200 --no-pager > "$report/audio-journal.txt" 2>&1 || true
+sudo -n timeout 8 journalctl "_UID=$voice_uid" --since "$started" -n 200 --no-pager > "$report/audio-journal.txt" 2>&1 || true
 ps -eLo pid,tid,cls,rtprio,pri,ni,psr,pcpu,comm > "$report/scheduling-after.txt"
 python3 - "$report" <<'PY'
 import pathlib,sys
