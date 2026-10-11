@@ -3,9 +3,9 @@
 set -euo pipefail
 [[ $(id -un) == tusone ]] || { echo 'Run as tusone' >&2; exit 1; }
 mode=${1:-apply}
-[[ $mode == apply || $mode == restore ]] || { echo 'Usage: bash audio-buffer.sh apply [960|1024] | restore' >&2; exit 1; }
-quantum=${2:-960}
-[[ $# -le 2 && ( $quantum == 960 || $quantum == 1024 ) ]] || { echo 'Expected quantum 960 or 1024' >&2; exit 1; }
+[[ $mode == apply || $mode == restore ]] || { echo 'Usage: bash audio-buffer.sh apply [480|960|1024] | restore' >&2; exit 1; }
+quantum=${2:-480}
+[[ $# -le 2 && ( $quantum == 480 || $quantum == 960 || $quantum == 1024 ) ]] || { echo 'Expected quantum 480, 960 or 1024' >&2; exit 1; }
 sudo -v
 voice_uid=$(id -u voice)
 metadata() {
@@ -20,7 +20,7 @@ if [[ $mode == apply ]]; then
     if [[ ! -f $backup ]]; then printf '%s\n' "$current" > "$backup"; fi
     metadata 0 clock.force-quantum "$quantum"
     printf '%s\n' "$quantum" > "$applied"
-    printf 'Runtime quantum: %s при 48 kHz (960 = 20 ms, 1024 = 21.3 ms). Повторите bash trace-audio.sh.\n' "$quantum"
+    printf 'Runtime quantum: %s при 48 kHz (480 = 10 ms, 960 = 20 ms, 1024 = 21.3 ms). Повторите bash trace-audio.sh.\n' "$quantum"
 else
     [[ -f $backup ]] || { echo 'Нет сохранённого значения.' >&2; exit 1; }
     previous=$(cat "$backup")

@@ -58,3 +58,8 @@ User report establishes rapidly increasing PipeWire graph errors; no board execu
 No Python behavior changes. User's 1024 report has flat ALSA ERR counters but +448 on
 each AEC source/playback node. 960 quantum and acoustic intelligibility remain untested
 on board. Restoring previous 1024-script backups remains supported.
+
+480/AEC repair: verified PipeWire1.4.2 upstream one-block processing against user's
+actual480-frame AEC and960-frame graph. Prior960 recommendation withdrawn. Shell syntax
+checked for audio-buffer.sh and repair-aec.sh. Board restart,480 graph deadlines and
+actual intelligibility remain unverified. No Python application/dependency changes.
