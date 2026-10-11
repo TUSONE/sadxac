@@ -8,6 +8,8 @@ import time
 import argparse
 import math
 import signal
+from contextlib import AsyncExitStack, asynccontextmanager
+from mic_processing import load_processor
 from array import array
 
 
@@ -27,13 +29,14 @@ OUTPUT_RATE = 48000
 OUTPUT_CHANNELS = 2
 
 # После обращения можно продолжать разговор без повторения имени.
-AWAKE_SECONDS = float(os.getenv("SLAVIK_AWAKE_SECONDS", "20"))
+AWAKE_SECONDS = float(os.getenv("SLAVIK_AWAKE_SECONDS", "5"))
 WAKE_ENABLED = os.getenv("SLAVIK_WAKE_ENABLED", "1") == "1"
 DEBUG_AUDIO = os.getenv("DEBUG_AUDIO", "0") == "1"
 
 WAKE_PATTERNS = [
     re.compile(r"\bэй\s+славк[ао]\b", re.I),
     re.compile(r"\bславик\b", re.I),
+    re.compile(r"\b(?:hey\s+)?slav(?:ik|ka|uha)\b", re.I),
     re.compile(r"\bебан(?:ые|ый|ая)\s+славик(?:и|ов)?\b", re.I),
     re.compile(r"\bёбан(?:ые|ый|ая)\s+славик(?:и|ов)?\b", re.I),
     re.compile(r"\bславух[аоуе]?\b", re.I),
@@ -52,14 +55,14 @@ SYSTEM_PROMPT = os.getenv(
 
 
 def system_instruction():
-    # Native-audio Live transcription has no supported forced-language setting.
-    # This is a conversational language hint, not a guarantee of ASR accuracy.
-    language = """Основной язык разговора — русский. По умолчанию говори по-русски.
-Пользователь может говорить с акцентом и употреблять приветствия «салом»,
-«салам», английские названия и сленг «братуха». Такие слова сами по себе не
-означают переход на португальский или другой язык. Если речь неясна,
-коротко переспроси по-русски; не выдумывай услышанное. Переключай язык только
-по явной просьбе пользователя."""
+    # Language codes bias server transcription; they do not enforce an ASR allowlist.
+    language = """Поддерживаемые языки разговора: только русский и английский.
+Распознавай русскую и английскую речь, в том числе с акцентом. По умолчанию
+отвечай по-русски, на явно английскую реплику отвечай по-английски.
+Русские приветствия «салом», «салам», сленг «братуха» и английские названия
+песен не означают переход на третий язык. Не отвечай на других языках.
+Если речь непонятна или на другом языке, попроси повторить по-русски или
+по-английски; не выдумывай услышанное."""
     mode = (
         "Режим пробуждения включён. Правило этого режима имеет приоритет: "
         "обычно молчи; отвечай после обращения «Эй Славка», «Славик», "
@@ -198,10 +201,19 @@ class WakeGate:
             raise ValueError("SLAVIK_AWAKE_SECONDS must be positive")
         self.awake_until = 0.0
         self.input_buf = ""
+        self.command_authorized = False
 
     @property
     def awake(self) -> bool:
         return not self.wake_enabled or time.monotonic() < self.awake_until
+
+    @property
+    def response_allowed(self):
+        return self.awake or self.command_authorized
+
+    def complete_turn(self):
+        self.clear_turn_text()
+        self.command_authorized = False
 
     def extend(self):
         self.awake_until = time.monotonic() + AWAKE_SECONDS
@@ -217,10 +229,12 @@ class WakeGate:
         self.last_input = now
         self.input_buf = (self.input_buf + text)[-300:]
         if contains_wake(text) or contains_wake(self.input_buf):
+            self.command_authorized = True
             was_asleep = not self.awake
             self.extend()
             self.input_buf = ""
             return was_asleep
+        self.command_authorized = self.awake
         if self.awake:
             self.extend()
         return False
@@ -230,8 +244,9 @@ class WakeGate:
 
 
 class PulseCapture:
-    def __init__(self):
+    def __init__(self, processed=True):
         self.proc = None
+        self.processor = load_processor(MIC_SOURCE) if processed else None
 
     async def start(self):
         self.proc = await asyncio.create_subprocess_exec(
@@ -243,7 +258,7 @@ class PulseCapture:
             err = await self.proc.stderr.read()
             raise RuntimeError(f"parec не запустился: {err.decode(errors='replace')}")
 
-    async def read_mono(self) -> bytes:
+    async def read_stereo(self) -> bytes:
         try:
             raw = await self.proc.stdout.readexactly(INPUT_BYTES)
         except asyncio.IncompleteReadError as e:
@@ -251,7 +266,11 @@ class PulseCapture:
             if self.proc and self.proc.stderr:
                 err = await self.proc.stderr.read()
             raise RuntimeError(f"Поток микрофона завершился: {err.decode(errors='replace')}") from e
-        return stereo_to_mono_channel(raw, INPUT_SELECTED_CHANNEL)
+        return raw
+
+    async def read_mono(self) -> bytes:
+        mono = stereo_to_mono_channel(await self.read_stereo(), INPUT_SELECTED_CHANNEL)
+        return self.processor.process(mono) if self.processor else mono
 
     async def close(self):
         await stop_process(self.proc)
@@ -348,9 +367,6 @@ async def receiver(session, player, gate, tool_queue=None):
         received = False
         async for response in session.receive():
             received = True
-            if tool_queue is not None and getattr(response, "tool_call", None):
-                for call in response.tool_call.function_calls or []:
-                    tool_queue.put_nowait((call, gate.awake))
             sc = response.server_content
             interrupted = bool(sc and getattr(sc, "interrupted", False))
             if interrupted:
@@ -366,6 +382,9 @@ async def receiver(session, player, gate, tool_queue=None):
                         print("[Славик активирован]", flush=True)
                     if getattr(inp, "finished", False):
                         gate.clear_turn_text()
+            if tool_queue is not None and getattr(response, "tool_call", None):
+                for call in response.tool_call.function_calls or []:
+                    tool_queue.put_nowait((call, gate.response_allowed))
             # Freeze the gate for each model turn. Never release old hidden audio
             # after a later wake word, and never truncate an authorized long reply.
             if not interrupted:
@@ -384,7 +403,7 @@ async def receiver(session, player, gate, tool_queue=None):
                 out = getattr(sc, "output_transcription", None) if sc else None
                 if chunks or (out and getattr(out, "text", None)):
                     if audible_turn is None:
-                        audible_turn = gate.awake
+                        audible_turn = gate.response_allowed
                     if audible_turn:
                         for chunk, rate in chunks:
                             await player.put(chunk, rate)
@@ -394,7 +413,7 @@ async def receiver(session, player, gate, tool_queue=None):
                 if audible_turn:
                     await player.finish_turn()
                 audible_turn = None
-                gate.clear_turn_text()
+                gate.complete_turn()
         if not received:
             raise RuntimeError("Live receive stream ended without a turn")
 
@@ -423,7 +442,6 @@ async def tool_worker(session, queue, spotify):
 async def run():
     from google import genai
     api_key = require_api_key()
-    client = genai.Client(api_key=api_key)
     spotify = None
     if os.getenv("SPOTIFY_ENABLED", "0") == "1":
         try:
@@ -437,10 +455,11 @@ async def run():
     capture = PulseCapture()
     player = PulsePlayer()
     gate = WakeGate()
+    client = genai.Client(api_key=api_key)
     try:
         await capture.start()
         await player.start()
-        async with client.aio.live.connect(model=MODEL, config=config) as session:
+        async with connect_live(client, config) as session:
             print(f"[Gemini Live подключен] Model={MODEL}", flush=True)
             print(f"Режим: пробуждение, окно {AWAKE_SECONDS:g}s" if WAKE_ENABLED else
                   "Режим: непрерывный диалог, без слова пробуждения", flush=True)
@@ -459,6 +478,24 @@ async def run():
 
 SPOTIFY_DECLARATIONS = [{'name': 'spotify_command', 'description': 'Управление Spotify по голосовой просьбе. Действия: play_track (включить трек), play_playlist (плейлист), play_artist (музыка исполнителя), radio (радио/похожая музыка), pause, resume, play_pause, next, previous, stop, volume_up, volume_down, status. Для трека/плейлиста/исполнителя передай название в query. Не утверждай, что команда выполнена, пока не получен результат инструмента.', 'parameters': {'type': 'OBJECT', 'properties': {'action': {'type': 'STRING', 'enum': ['play_track', 'play_playlist', 'play_artist', 'radio', 'pause', 'resume', 'play_pause', 'next', 'previous', 'stop', 'volume_up', 'volume_down', 'status']}, 'query': {'type': 'STRING', 'description': 'Название трека, плейлиста или исполнителя'}}, 'required': ['action']}}]
 
+@asynccontextmanager
+async def connect_live(client, config):
+    async with AsyncExitStack() as stack:
+        try:
+            session = await stack.enter_async_context(client.aio.live.connect(model=MODEL, config=config))
+        except Exception as error:
+            reason = str(error).lower()
+            if not (config.input_audio_transcription.language_codes and
+                    'unknown name' in reason and
+                    ('language_codes' in reason or 'languagecodes' in reason)):
+                raise
+            from google.genai import types
+            print('[ASR] Сервер не поддерживает language_codes; остаётся инструкция RU/EN.', flush=True)
+            config.input_audio_transcription = types.AudioTranscriptionConfig()
+            session = await stack.enter_async_context(client.aio.live.connect(model=MODEL, config=config))
+        yield session
+
+
 def make_config(enable_spotify=False):
     from google.genai import types
     return types.LiveConnectConfig(
@@ -473,7 +510,10 @@ def make_config(enable_spotify=False):
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=VOICE)
             )
         ),
-        input_audio_transcription=types.AudioTranscriptionConfig(),
+        input_audio_transcription=types.AudioTranscriptionConfig(
+            language_codes=["ru-RU", "en-US"]
+            if os.getenv("GEMINI_LANGUAGE_HINTS", "1") == "1" else None
+        ),
         output_audio_transcription=types.AudioTranscriptionConfig(),
         realtime_input_config=types.RealtimeInputConfig(
             automatic_activity_detection=types.AutomaticActivityDetection(
@@ -508,20 +548,76 @@ async def diagnostic(mode):
         finally:
             await stop_process(proc)
     else:
-        capture = PulseCapture()
+        capture = PulseCapture(processed=False)
+        processor = load_processor(MIC_SOURCE)
         try:
             await capture.start()
             for _ in range(10):
-                pcm = b"".join([await asyncio.wait_for(capture.read_mono(), 3) for _ in range(12)])
-                samples = array("h")
-                samples.frombytes(pcm)
-                if sys.byteorder != "little":
-                    samples.byteswap()
-                peak = max(abs(x) for x in samples)
-                rms = math.sqrt(sum(x*x for x in samples) / len(samples))
-                print(f"Right mic: peak={peak}, RMS={rms:.1f}, clipping={peak >= 32760}", flush=True)
+                raw = b"".join([await asyncio.wait_for(capture.read_mono(), 3) for _ in range(12)])
+                from mic_processing import samples
+                original = samples(raw)
+                processed = samples(processor.process(raw))
+                raw_peak = max(abs(x) for x in original)
+                raw_clips = sum(abs(x) >= 32760 for x in original)
+                rms = math.sqrt(sum(x*x for x in processed) / len(processed))
+                print(f"Right mic: raw_peak={raw_peak}, raw_clipped={raw_clips}/{len(original)}, "
+                      f"processed_RMS={rms:.1f}, limiter_frames={processor.limited_frames}", flush=True)
         finally:
             await capture.close()
+
+
+
+async def wait_enter(prompt):
+    print(prompt, end='', flush=True)
+    loop = asyncio.get_running_loop()
+    ready = loop.create_future()
+    def readable():
+        if not ready.done(): ready.set_result(None)
+    loop.add_reader(sys.stdin.fileno(), readable)
+    try:
+        await ready
+        if not sys.stdin.readline():
+            raise RuntimeError('Для калибровки нужен интерактивный терминал.')
+    finally:
+        loop.remove_reader(sys.stdin.fileno())
+
+
+async def calibrate_mic():
+    from mic_processing import HighPass, frame_stats, calibration, save_profile, DEFAULT_PATH
+    async def record(label, seconds):
+        await wait_enter(label + " Нажмите Enter, когда готовы: ")
+        capture = PulseCapture(processed=False)
+        filters = [HighPass(), HighPass()]
+        frames = [[], []]
+        try:
+            await capture.start()
+            for i in range(seconds * 25):
+                raw = await asyncio.wait_for(capture.read_stereo(), 3)
+                for channel in (0, 1):
+                    frames[channel].append(frame_stats(stereo_to_mono_channel(raw, channel), filters[channel]))
+                if i % 25 == 0:
+                    print(f"[Калибровка] осталось {seconds - i // 25}s", flush=True)
+        finally:
+            await capture.close()
+        return frames
+    print('Калибровка AEC-микрофона без Gemini. Никакая запись речи на диск не сохраняется.')
+    noise = await record('Этап 1: 3 секунды тишины, обычный фоновый шум.', 3)
+    speech = await record('Этап 2: 10 секунд говорите с обычного расстояния. '
+                          'Например: «Славик, включи музыку. Hello Slavik, play some music».', 10)
+    profile = calibration(noise[1], speech[1], MIC_SOURCE)
+    print(f"Правый канал: SNR={profile['snr_db']}dB, речь RMS={profile['speech_rms']}, "
+          f"шум RMS={profile['noise_rms']}, gain={profile['gain']}, "
+          f"clipping={100*profile['raw_clipping_fraction']:.3f}%", flush=True)
+    from mic_processing import percentile
+    left = percentile([x['rms'] for x in speech[0]], .8)
+    right = percentile([x['rms'] for x in speech[1]], .8)
+    if left > 2 * max(right, 1):
+        print('Левый канал заметно громче правого. Канал не переключён; проверьте расположение микрофона.')
+    if profile['snr_db'] < 10:
+        print('Низкий SNR: усиление увеличивает также шум. Уменьшите шум/расстояние и повторите.')
+    path = os.getenv('SLAVIK_MIC_CALIBRATION', str(DEFAULT_PATH))
+    save_profile(profile, path)
+    print(f'Профиль сохранён: {path}. Он применяется при следующем запуске.', flush=True)
 
 
 async def entry(args):
@@ -529,8 +625,25 @@ async def entry(args):
     loop = asyncio.get_running_loop()
     loop.add_signal_handler(signal.SIGTERM, task.cancel)
     try:
-        await (diagnostic("audio" if args.audio_test else "mic")
-               if args.audio_test or args.mic_test else run())
+        if args.spotify_login or args.spotify_status:
+            from spotify_api import login, spotify_command
+            if args.spotify_login:
+                import threading
+                stopped = threading.Event()
+                try:
+                    await asyncio.to_thread(login, stopped)
+                finally:
+                    stopped.set()
+            else:
+                result = await asyncio.to_thread(spotify_command, {"action": "status"})
+                if result.startswith("Не выполнено:"):
+                    raise RuntimeError(result)
+                print(result)
+        elif args.calibrate_mic:
+            await calibrate_mic()
+        else:
+            await (diagnostic("audio" if args.audio_test else "mic")
+                   if args.audio_test or args.mic_test else run())
     finally:
         loop.remove_signal_handler(signal.SIGTERM)
 
@@ -540,6 +653,9 @@ def main():
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--audio-test", action="store_true")
     modes.add_argument("--mic-test", action="store_true")
+    modes.add_argument("--calibrate-mic", action="store_true")
+    modes.add_argument("--spotify-login", action="store_true")
+    modes.add_argument("--spotify-status", action="store_true")
     args = parser.parse_args()
     try:
         asyncio.run(entry(args))
@@ -550,7 +666,7 @@ def main():
             if isinstance(exc, BaseExceptionGroup):
                 for child in exc.exceptions:
                     report(child)
-            elif type(exc) is RuntimeError:
+            elif type(exc) is RuntimeError or (type(exc).__module__ == "spotify_api" and type(exc).__name__ == "SpotifyError"):
                 print(f"Ошибка: {exc}", file=sys.stderr)
             else:
                 print(f"Ошибка: {type(exc).__name__}; код={getattr(exc, 'code', '—')}. "

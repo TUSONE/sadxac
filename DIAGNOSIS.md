@@ -37,3 +37,22 @@ SLAVIK_WAKE_ENABLED=1 возвращает прежний режим. Добав
 Пользователь уточнил UX: wake-режим возвращён по умолчанию. После обращения
 окно команд 20 секунд, продление только в активном окне, затем тишина до нового
 обращения. Непрерывные capture/WebSocket и русская инструкция сохранены.
+
+## Калибровка, RU/EN и Spotify
+
+Default timeout сокращён до 5 секунд. Разрешение конкретной пользовательской
+команды сохраняется до конца её хода, чтобы задержка модели/API не отбрасывала
+ответ; неадресованная речь после истечения окна не открывает новый ход.
+Найдено language_codes в SDK 2.29.0 — поле является hints, не allowlist языков.
+Добавлен fallback только при явном Unknown name language_codes в начальном setup.
+DSP входа: фиксированный right/16k, HP60Hz, измеренный gain и peak headroom.
+Не добавлен noise gate, способный подавлять барж-ин/слабую речь.
+
+Spotify bridge написан заново (старого в архиве нет), PKCE без Client Secret.
+Официальные исходники Raspotify inspected at d0250f176ad58836fb89a6ffb1246d23389549d6,
+включая signed-by apt repo и pulseaudio build feature. Проверен upstream
+librespot Pulse backend: параметр device передаётся как sink. Connect installer
+использует пакетный /usr/bin/librespot и отдельную службу voice с AEC sink.
+Официальные страницы Spotify docs и GitHub release API ответили 403 в этой среде;
+OAuth и account permissions остаются непроверенными до входа пользователя.
+Никакие credentials/службы реальной платы здесь не предоставлены.

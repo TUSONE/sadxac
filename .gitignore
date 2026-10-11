@@ -2,3 +2,5 @@ __pycache__/
 *.py[cod]
 .venv/
 .env
+spotify-token.json
+mic-calibration.json

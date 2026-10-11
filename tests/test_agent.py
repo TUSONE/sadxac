@@ -3,10 +3,13 @@ import importlib.util
 import math
 import struct
 import time
+import sys
 import unittest
 from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace as NS
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 spec = importlib.util.spec_from_file_location('agent', Path(__file__).resolve().parents[1] / 'gemini_assistant_dialog.py')
 a = importlib.util.module_from_spec(spec)
@@ -45,7 +48,7 @@ class PCMTests(unittest.TestCase):
 
 class WakeTests(unittest.TestCase):
     def test_wakes_and_background(self):
-        for text in ['Эй Славка!', 'Славик', 'Ебаные славики', 'Ёбаные славики', 'Славуха']:
+        for text in ['Эй Славка!', 'Славик', 'Ебаные славики', 'Ёбаные славики', 'Славуха', 'Hey Slavik']:
             self.assertTrue(a.contains_wake(text))
         self.assertFalse(a.contains_wake('обычный разговор о музыке'))
         self.assertFalse(a.contains_wake('славиковский'))
@@ -72,7 +75,7 @@ class WakeTests(unittest.TestCase):
         self.assertTrue(gate.awake)
         self.assertFalse(gate.feed_transcript('Привет, братуха'))
         self.assertTrue(gate.awake)
-        self.assertIn('Основной язык разговора — русский', a.system_instruction())
+        self.assertIn('только русский и английский', a.system_instruction())
 
     def test_wake_timer_expires_and_background_cannot_extend_or_reopen(self):
         with patch.object(a.time, 'monotonic') as clock:
@@ -98,6 +101,7 @@ class WakeTests(unittest.TestCase):
     def test_sdk_config(self):
         config = a.make_config().model_dump(exclude_none=True)
         self.assertNotIn('proactivity', config)
+        self.assertEqual(config['input_audio_transcription']['language_codes'], ['ru-RU', 'en-US'])
         self.assertEqual(config['response_modalities'], ['AUDIO'])
         self.assertEqual(config['realtime_input_config']['automatic_activity_detection']['start_of_speech_sensitivity'], 'START_SENSITIVITY_LOW')
 
@@ -191,6 +195,40 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(replies[0]['function_responses'][0].id, 'call1')
         self.assertIn('спит', replies[0]['function_responses'][0].response['result'])
 
+
+    async def test_command_started_in_window_can_finish_after_timeout(self):
+        gate = a.WakeGate(wake_enabled=True); player = FakePlayer()
+        class Session:
+            calls = 0
+            async def receive(self):
+                self.calls += 1
+                if self.calls == 1:
+                    yield message(input_transcription=NS(text='Славик включи музыку'))
+                    gate.awake_until = time.monotonic() - 1
+                    yield message(b'reply', turn_complete=True)
+                elif self.calls == 2:
+                    yield message(b'background', input_transcription=NS(text='неадресованная речь'), turn_complete=True)
+        with self.assertRaises(RuntimeError): await a.receiver(Session(), player, gate)
+        self.assertEqual(player.audio, [(b'reply', 24000)])
+        self.assertFalse(gate.response_allowed)
+
+    async def test_language_hint_rejection_retries_only_initial_setup(self):
+        config = a.make_config()
+        calls = []
+        class Context:
+            async def __aenter__(self):
+                if len(calls) == 1:
+                    raise RuntimeError('1007 Unknown name "language_codes" at setup')
+                return 'session'
+            async def __aexit__(self, *args): pass
+        class Live:
+            def connect(self, **args):
+                calls.append(args['config'].input_audio_transcription.language_codes)
+                return Context()
+        client = NS(aio=NS(live=Live()))
+        async with a.connect_live(client, config) as session:
+            self.assertEqual(session, 'session')
+        self.assertEqual(calls, [['ru-RU', 'en-US'], None])
 
     async def test_flush_does_not_wait_for_blocked_writer(self):
         player = a.PulsePlayer()
