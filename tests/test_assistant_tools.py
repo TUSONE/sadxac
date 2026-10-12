@@ -170,7 +170,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(guard.accept('Может что-нибудь', player))
             self.assertIsNone(guard.accept('Will I switch it?', player))
             self.assertEqual(guard.accept('Славка, поставь паузу', player), 'Славка, поставь паузу')
-            gate = agent.WakeGate(wake_enabled=True)
+            gate = agent.WakeGate(wake_enabled=True, followup_enabled=True)
             gate.feed_transcript('Славик привет')
             gate.complete_turn()
             self.assertTrue(gate.awake)
@@ -193,3 +193,40 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
             await agent.receiver(session, player, gate, queue)
         self.assertFalse(queue.get_nowait()[1])
         self.assertFalse(queue.get_nowait()[1])
+
+    async def test_delayed_altered_echo_from_user_log_cannot_authorize_reply(self):
+        from test_agent import FakePlayer, FakeSession, message
+        gate, player = agent.WakeGate(wake_enabled=True, followup_enabled=False), FakePlayer()
+        class DelayedSession(FakeSession):
+            async def receive(self):
+                self.calls += 1
+                if self.calls == 1:
+                    yield message(b'hello', input_transcription=NS(text='Славик привет'),
+                                  output_transcription=NS(text='Привет! Что хотел?'), turn_complete=True)
+                elif self.calls == 2:
+                    clock.return_value = 105  # beyond the old 1.2-second guard
+                    yield message(input_transcription=NS(text='Привет. Что с'), interrupted=True)
+                    yield message(b'self_reply', turn_complete=True)
+                elif self.calls == 3:
+                    clock.return_value = 110
+                    yield message(input_transcription=NS(text='Ja fein feine'))
+                    yield message(b'foreign_reply', turn_complete=True)
+        with patch.object(agent.time, 'monotonic') as clock:
+            clock.return_value = 100
+            with self.assertRaises(RuntimeError):
+                await agent.receiver(DelayedSession([]), player, gate)
+        self.assertEqual(player.finished, 1)
+        self.assertFalse(gate.response_allowed)
+
+    async def test_strict_request_fragments_end_when_reply_begins(self):
+        from test_agent import FakePlayer, FakeSession, message
+        gate, player = agent.WakeGate(wake_enabled=True, followup_enabled=False), FakePlayer()
+        gate.feed_transcript('Славик')
+        gate.feed_transcript('включи Кизару')
+        self.assertTrue(gate.response_allowed)
+        with self.assertRaises(RuntimeError):
+            await agent.receiver(FakeSession([[message(b'reply', turn_complete=True)]]), player, gate)
+        gate.feed_transcript('Могу найти')
+        self.assertFalse(gate.response_allowed)
+        gate.feed_transcript('Славка поставь паузу')
+        self.assertTrue(gate.response_allowed)

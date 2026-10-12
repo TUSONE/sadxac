@@ -1,3 +1,5 @@
+Strict addressed requests: 94 unittest tests passed. Delayed altered echo from actual user log denied; follow-up disabled by default, one-utterance fragments preserved. Echo remains an acoustic hardware issue; no maximal-volume AEC validation. Previous local success did not stop the loop on the board.
+
 Echo-loop regression: 92 unittest tests passed. Recent self-transcript + foreign input suppressed, idle-window unsolicited response blocked, addressed barge-in and fresh follow-up preserved, experimental audio wake cannot override rejected echo. Board AEC/hearing quality not validated.
 
 Current assistant rework: 88 unittest tests passed; pip check passed. Weather/search schemas, structured Spotify outcomes, call-id replay, curated queue matching, calibrated channel capture, reply-end ducking and fixed 100% output policy covered. Open-Meteo live smoke blocked by cloud egress proxy 403; Gemini key absent. Board audio, maximal-volume ASR and actual generated confirmations NOT validated. Older results below are historical.

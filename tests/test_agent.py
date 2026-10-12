@@ -86,7 +86,7 @@ class WakeTests(unittest.TestCase):
         self.assertFalse(a.contains_wake('славиковский'))
 
     def test_split_transcript_and_timeout(self):
-        gate = a.WakeGate(wake_enabled=True)
+        gate = a.WakeGate(wake_enabled=True, followup_enabled=True)
         self.assertFalse(gate.feed_transcript('Сла'))
         self.assertTrue(gate.feed_transcript('вик'))
         self.assertTrue(gate.awake)
@@ -97,7 +97,7 @@ class WakeTests(unittest.TestCase):
         self.assertFalse(gate.awake)
 
     def test_old_fragments_do_not_wake(self):
-        gate = a.WakeGate(wake_enabled=True); gate.feed_transcript('Сла')
+        gate = a.WakeGate(wake_enabled=True, followup_enabled=True); gate.feed_transcript('Сла')
         gate.last_input -= 3
         self.assertFalse(gate.feed_transcript('вка'))
 
@@ -112,7 +112,7 @@ class WakeTests(unittest.TestCase):
     def test_wake_timer_expires_and_background_cannot_extend_or_reopen(self):
         with patch.object(a.time, 'monotonic') as clock:
             clock.return_value = 100
-            gate = a.WakeGate(wake_enabled=True)
+            gate = a.WakeGate(wake_enabled=True, followup_enabled=True)
             self.assertFalse(gate.awake)
             self.assertFalse(gate.feed_transcript('Привет, братуха'))
             self.assertTrue(gate.feed_transcript('Славик'))
@@ -155,7 +155,7 @@ def message(data=None, **fields):
 class StreamTests(unittest.IsolatedAsyncioTestCase):
     async def test_audio_wake_with_bad_transcription_authorizes_same_packet(self):
         for addressed in (True, False, 'true'):
-            gate = a.WakeGate(wake_enabled=True)
+            gate = a.WakeGate(wake_enabled=True, followup_enabled=True)
             player = FakePlayer()
             queue = asyncio.Queue()
             event = message(input_transcription=NS(text='Валик давай другой трек'))
@@ -171,7 +171,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(bool(player.audio), addressed is True)
 
     async def test_disabled_audio_wake_cannot_authorize_even_if_requested(self):
-        gate = a.WakeGate(wake_enabled=True)
+        gate = a.WakeGate(wake_enabled=True, followup_enabled=True)
         queue = asyncio.Queue()
         event = message(input_transcription=NS(text='Привет зай'))
         event.tool_call = NS(function_calls=[NS(name='wake_assistant', id='wake', args={'addressed': True})])
@@ -201,7 +201,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(f.readframes(1), struct.pack('<hh', 11, 22) if path.name == 'physical-stereo.wav' else struct.pack('<h', 22))
 
     async def test_music_call_alone_cannot_wake_from_bad_transcription(self):
-        gate = a.WakeGate(wake_enabled=True)
+        gate = a.WakeGate(wake_enabled=True, followup_enabled=True)
         player = FakePlayer()
         queue = asyncio.Queue()
         event = message(input_transcription=NS(text='Валик давай другой трек'))
@@ -221,7 +221,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(player.finished, 2)
 
     async def test_background_dropped_multiple_turns_and_no_duplicate_audio(self):
-        gate = a.WakeGate(wake_enabled=True); player = FakePlayer()
+        gate = a.WakeGate(wake_enabled=True, followup_enabled=True); player = FakePlayer()
         fallback = NS(parts=[NS(inline_data=NS(data=b'fallback', mime_type='audio/pcm;rate=24000'))])
         session = FakeSession([
             [message(b'background', turn_complete=True)],
@@ -234,7 +234,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.calls, 4)
 
     async def test_interrupted_flush_always_and_same_event_transcript(self):
-        gate = a.WakeGate(wake_enabled=True); player = FakePlayer()
+        gate = a.WakeGate(wake_enabled=True, followup_enabled=True); player = FakePlayer()
         session = FakeSession([[message(b'stale', interrupted=True, input_transcription=NS(text='Славик')), message(b'new', turn_complete=True)]])
         with self.assertRaises(RuntimeError): await a.receiver(session, player, gate)
         self.assertEqual(player.flushed, 1)
@@ -242,20 +242,20 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(player.audio, [(b'new', 24000)])
 
     async def test_hidden_turn_never_released_after_late_wake(self):
-        gate = a.WakeGate(wake_enabled=True); player = FakePlayer()
+        gate = a.WakeGate(wake_enabled=True, followup_enabled=True); player = FakePlayer()
         session = FakeSession([[message(b'background'), message(b'late', input_transcription=NS(text='Славик')), message(turn_complete=True)]])
         with self.assertRaises(RuntimeError): await a.receiver(session, player, gate)
         self.assertEqual(player.audio, [])
 
     async def test_fallback_pcm(self):
-        gate = a.WakeGate(wake_enabled=True); gate.feed_transcript('Славик'); player = FakePlayer()
+        gate = a.WakeGate(wake_enabled=True, followup_enabled=True); gate.feed_transcript('Славик'); player = FakePlayer()
         part = NS(inline_data=NS(data=b'pcm', mime_type='audio/pcm;rate=48000'))
         session = FakeSession([[message(model_turn=NS(parts=[part]), turn_complete=True)]])
         with self.assertRaises(RuntimeError): await a.receiver(session, player, gate)
         self.assertEqual(player.audio, [(b'pcm', 48000)])
 
     async def test_authorized_reply_survives_wake_timeout(self):
-        gate = a.WakeGate(wake_enabled=True); gate.feed_transcript('Славик'); player = FakePlayer()
+        gate = a.WakeGate(wake_enabled=True, followup_enabled=True); gate.feed_transcript('Славик'); player = FakePlayer()
         class Session:
             calls = 0
             async def receive(self):
@@ -287,7 +287,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
 
 
     async def test_command_started_in_window_can_finish_after_timeout(self):
-        gate = a.WakeGate(wake_enabled=True); player = FakePlayer()
+        gate = a.WakeGate(wake_enabled=True, followup_enabled=True); player = FakePlayer()
         class Session:
             calls = 0
             async def receive(self):

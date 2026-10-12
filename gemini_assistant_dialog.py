@@ -8,6 +8,7 @@ import time
 import argparse
 import math
 import signal
+from difflib import SequenceMatcher
 from assistant_tools import KNOWLEDGE_DECLARATIONS, weather, web_search, tool_outcome
 from contextlib import AsyncExitStack, asynccontextmanager
 from mic_processing import load_processor
@@ -32,6 +33,7 @@ OUTPUT_CHANNELS = 2
 # После обращения можно продолжать разговор без повторения имени.
 AWAKE_SECONDS = float(os.getenv("SLAVIK_AWAKE_SECONDS", "5"))
 WAKE_ENABLED = os.getenv("SLAVIK_WAKE_ENABLED", "1") == "1"
+FOLLOWUP_ENABLED = os.getenv("SLAVIK_FOLLOWUP", "0") == "1"
 DEBUG_AUDIO = os.getenv("DEBUG_AUDIO", "0") == "1"
 DEBUG_EVENTS = os.getenv("SLAVIK_DEBUG_EVENTS", "0") == "1"
 
@@ -87,6 +89,12 @@ def system_instruction():
         "Непрерывный диалог включён. Отвечай на обращённую к тебе речь сразу, "
         "без слова пробуждения и без ограничения окна разговора."
     )
+    if WAKE_ENABLED and not FOLLOWUP_ENABLED:
+        mode = ("Режим строгих обращений: каждая новая просьба должна содержать имя "
+                "Славик, Славка, Слава, Славуха, Славчуха или близкий вариант. "
+                "После ответа молчи до нового обращения. Имя может быть в любой части фразы. "
+                "Не считай свой голос, повтор ответа или фоновую речь обращением. "
+                "Не предлагай новые темы и не продолжай беседу сам.")
     audio_wake = """Определяй обращение по самому входному аудио: текст транскрипции может ошибаться.
 Когда в аудио пользователь явно обращается к тебе по имени, сначала вызови wake_assistant
 с addressed=true, затем отвечай или выполняй команду. Имя может быть в любой части фразы.
@@ -236,8 +244,10 @@ def contains_wake(text: str) -> bool:
 
 
 class WakeGate:
-    def __init__(self, wake_enabled=WAKE_ENABLED):
+    def __init__(self, wake_enabled=WAKE_ENABLED, followup_enabled=FOLLOWUP_ENABLED):
         self.wake_enabled = wake_enabled
+        self.followup_enabled = followup_enabled
+        self.input_authorized = False
         if AWAKE_SECONDS <= 0:
             raise ValueError("SLAVIK_AWAKE_SECONDS must be positive")
         self.awake_until = 0.0
@@ -266,6 +276,9 @@ class WakeGate:
             self.music_finish_pending = False
         self.clear_turn_text()
         self.command_authorized = False
+        self.input_authorized = False
+        if not self.followup_enabled:
+            self.awake_until = 0
 
     def extend(self):
         self.awake_until = time.monotonic() + AWAKE_SECONDS
@@ -278,6 +291,7 @@ class WakeGate:
         now = time.monotonic()
         if now - getattr(self, "last_input", 0) > 2:
             self.input_buf = ""
+            self.input_authorized = False
         self.last_utterance = (self.last_utterance + " " + text if now - getattr(self, "last_input", 0) <= 2 else text)[-500:]
         self.last_input = now
         self.input_buf = (self.input_buf + text)[-300:]
@@ -285,13 +299,15 @@ class WakeGate:
             self.addressed = True
             self.music_finish_pending = self.close_when_drained = False
             self.command_authorized = True
+            self.input_authorized = True
             self.duck_pending_until = now + 30
             was_asleep = not self.awake
             self.extend()
             self.input_buf = ""
             return was_asleep
-        self.command_authorized = self.awake
-        if self.awake:
+        # Name authorizes fragments of this utterance, not the next utterance.
+        self.command_authorized = self.input_authorized or (self.followup_enabled and self.awake)
+        if self.command_authorized:
             self.addressed = True
             self.duck_pending_until = now + 30
             self.extend()
@@ -338,9 +354,12 @@ class EchoGuard:
         protected = (self.playing(player) or now < self.tail_until or
                      now < getattr(player, 'audio_until', 0) + 1.2 or
                      now < self.output_at + 1.2)
-        echo = (protected and recent and len(norm) >= 6 and
-                (len(norm.split()) >= 2 or contains_wake(norm)) and
-                norm in normalize_text(self.output))
+        words, spoken = norm.split(), normalize_text(self.output).split()
+        overlap = SequenceMatcher(None, words, spoken, autojunk=False).find_longest_match().size
+        echo = (recent and len(norm) >= 6 and
+                (len(words) >= 2 or contains_wake(norm)) and
+                (norm in normalize_text(self.output) or
+                 (overlap >= 2 and overlap / max(1, len(words)) >= .6)))
         if echo:
             self.candidate = ""
             return None
@@ -589,6 +608,7 @@ async def receiver(session, player, gate, tool_queue=None):
                             print("[Славик активирован]", flush=True)
                     if getattr(inp, "finished", False):
                         gate.clear_turn_text()
+                        gate.input_authorized = False
             if tool_queue is not None and getattr(response, "tool_call", None):
                 calls = response.tool_call.function_calls or []
                 # Process an explicit audio-based wake before other calls in the
@@ -628,6 +648,8 @@ async def receiver(session, player, gate, tool_queue=None):
                 if chunks or (out and getattr(out, "text", None)):
                     if audible_turn is None:
                         audible_turn = gate.response_allowed
+                        if audible_turn:
+                            gate.input_authorized = False
                     if audible_turn:
                         for chunk, rate in chunks:
                             await player.put(chunk, rate)
@@ -739,7 +761,8 @@ async def run():
         await player.start()
         async with connect_live(client, config) as session:
             print(f"[Gemini Live подключен] Model={MODEL}", flush=True)
-            print(f"Режим: пробуждение, окно {AWAKE_SECONDS:g}s" if WAKE_ENABLED else
+            print((f"Режим: обращения, окно {AWAKE_SECONDS:g}s" if FOLLOWUP_ENABLED else
+                   "Режим: строгое обращение для каждой новой просьбы") if WAKE_ENABLED else
                   "Режим: непрерывный диалог, без слова пробуждения", flush=True)
             print("[Громкость] Голос: 40%; обычные команды громкости управляют музыкой.", flush=True)
             print(f"Mic={MIC_SOURCE}: 16k stereo -> channel {capture.channel} mono; Out={SPEAKER_SINK}: 24k mono -> 48k stereo", flush=True)
