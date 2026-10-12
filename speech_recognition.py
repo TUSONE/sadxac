@@ -8,6 +8,7 @@ from collections import deque
 import io
 import json
 import os
+import re
 import time
 import wave
 
@@ -82,10 +83,78 @@ text="", language="none". Собственный голос ассистента
 """
 
 
-async def transcribe(client, pcm):
+def candidate_models(models):
+    """Use names returned by this API/key, never guess a new model version."""
+    candidates = []
+    for model in models:
+        name = getattr(model, 'name', '') or ''
+        short = name.removeprefix('models/')
+        actions = getattr(model, 'supported_actions', None) or []
+        if (not re.fullmatch(r'gemini-[a-zA-Z0-9_.-]+', short) or 'flash' not in short or
+                not any(a in ('generateContent', 'generate_content') for a in actions) or
+                any(term in short for term in ('image', 'tts', 'live', 'native-audio', 'embedding', 'robotics'))):
+            continue
+        candidates.append(name)
+    def rank(name):
+        version = re.search(r'gemini-(\d+)(?:\.(\d+))?', name)
+        major, minor = (int(version[1]), int(version[2] or 0)) if version else (0, 0)
+        return ('preview' in name or 'exp' in name, 'lite' in name, -major, -minor, name)
+    return sorted(set(candidates), key=rank)
+
+
+async def prepare_recognizer(client):
+    explicit = os.getenv('SLAVIK_ASR_MODEL', '').strip()
+    if explicit and not re.fullmatch(r'(?:models/)?gemini-[a-zA-Z0-9_.-]+', explicit):
+        raise RuntimeError('Некорректное имя SLAVIK_ASR_MODEL.')
+    async def probe(name):
+        await transcribe(client, b'\0' * 8000, model=name)  # .25s silence; no microphone recording
+        client._slavik_asr_model = name
+        print(f'[ASR] Модель проверена: {name}', flush=True)
+        return name
+    if explicit:
+        try:
+            return await probe(explicit)
+        except Exception as error:
+            if getattr(error, 'code', None) != 404:
+                raise RuntimeError(f'Проверка ASR {explicit} не прошла; код={getattr(error, "code", "—")}.') from None
+            print(f'[ASR] {explicit} недоступна (404); ищу модель в каталоге API.', flush=True)
+    async def collect():
+        result = []
+        async for model in await client.aio.models.list():
+            result.append(model)
+            if len(result) >= 200:
+                break
+        return result
+    try:
+        models = await asyncio.wait_for(collect(), 15)
+    except Exception as error:
+        raise RuntimeError(f'Не удалось получить каталог Gemini для ASR; код={getattr(error, "code", "—")}. '                           'Можно указать доступную audio-модель в SLAVIK_ASR_MODEL.') from None
+    candidates = candidate_models(models)
+    tried = []
+    for name in candidates[:5]:
+        if name.removeprefix('models/') == explicit.removeprefix('models/'):
+            continue
+        tried.append(name)
+        try:
+            return await probe(name)
+        except Exception as error:
+            code = getattr(error, 'code', None)
+            if code == 404 or isinstance(error, ValueError):
+                continue
+            # Do not route around permissions, quota, or a network outage.
+            raise RuntimeError(f'Проверка модели ASR {name} не прошла; код={code or "—"}. '                               'Проверьте доступ и лимиты API.') from None
+    raise RuntimeError('Нет проверенной модели для отдельного ASR. Кандидаты: ' +
+                       (', '.join(tried) or 'каталог не содержит Flash с generateContent') +
+                       '. Можно временно выбрать SLAVIK_ASR=live в .env.')
+
+
+async def transcribe(client, pcm, model=None):
     from google.genai import types
+    model = model or getattr(client, '_slavik_asr_model', None) or os.getenv('SLAVIK_ASR_MODEL')
+    if not model:
+        raise RuntimeError('ASR модель не проверена перед запуском.')
     response = await asyncio.wait_for(client.aio.models.generate_content(
-        model=os.getenv('SLAVIK_ASR_MODEL', 'gemini-2.5-flash'),
+        model=model,
         contents=types.Content(role='user', parts=[types.Part.from_bytes(
             data=wav_bytes(pcm), mime_type='audio/wav')]),
         config=types.GenerateContentConfig(
@@ -140,6 +209,8 @@ async def recognition_worker(client, session, queue, gate, player, echo, send_lo
             try:
                 text = await transcribe(client, pcm)
             except Exception as error:
+                if getattr(error, 'code', None) == 404:
+                    raise RuntimeError('Проверенная ASR-модель стала недоступна (404). Перезапустите Славика для нового выбора модели.') from None
                 print(f'[ASR] Ошибка {type(error).__name__}; код={getattr(error, "code", "—")}. Проверьте SLAVIK_ASR_MODEL и лимиты API.', flush=True)
                 continue
             if not text or player_busy(player):

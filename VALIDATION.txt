@@ -1,3 +1,5 @@
+ASR404 correction: 107 unittest checks passed. Model catalog/action filter, WAV/JSON preflight, stale override404 fallback, 403/429 no-switch and no valid candidate failure covered. Actual account catalog/model permissions remain untested (cloud key absent).
+
 Independent ASR migration: 103 unittest tests passed, pip check passed, WebRTC VAD 2.0.14 built from source with GCC on Linux x86_64. NO_INTERRUPTION/manual Live config, real-VAD silence, bounded segmentation, WAV request schema, authorized activity ordering, failure isolation and preserving audio on interrupted covered. Existing music/speech sample yields continuous activity capped at8s; no evidence of speech separation. Real ASR API (key absent), ARM/Python3.13 and acoustic quality untested. Barge-in disabled, duck12dB, master100 unchanged.
 
 Strict addressed requests: 94 unittest tests passed. Delayed altered echo from actual user log denied; follow-up disabled by default, one-utterance fragments preserved. Echo remains an acoustic hardware issue; no maximal-volume AEC validation. Previous local success did not stop the loop on the board.

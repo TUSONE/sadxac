@@ -44,7 +44,7 @@ class SegmentTests(unittest.TestCase):
 class RecognitionTests(unittest.IsolatedAsyncioTestCase):
     async def test_audio_request_is_wav_with_ru_en_schema_and_no_persisted_file(self):
         generate = AsyncMock(return_value=NS(text=json.dumps({'text': 'Славик, громкость 50', 'language': 'ru'})))
-        client = NS(aio=NS(models=NS(generate_content=generate)))
+        client = NS(_slavik_asr_model='models/gemini-test-flash', aio=NS(models=NS(generate_content=generate)))
         raw = struct.pack('<h', 1000) * 16000
         self.assertEqual(await speech.transcribe(client, raw), 'Славик, громкость 50')
         args = generate.call_args.kwargs
@@ -124,3 +124,47 @@ class RecognitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(activity['automatic_activity_detection'], {'disabled': True})
         self.assertEqual(activity['activity_handling'], 'NO_INTERRUPTION')
         self.assertEqual(activity['turn_coverage'], 'TURN_INCLUDES_ONLY_ACTIVITY')
+
+    async def test_catalog_selection_excludes_live_tts_image_and_unusable_actions(self):
+        models = [NS(name=name, supported_actions=actions) for name, actions in [
+            ('models/gemini-3.1-flash-live-preview', ['generateContent']),
+            ('models/gemini-9-flash-image', ['generateContent']),
+            ('models/gemini-4-flash-tts', ['generateContent']),
+            ('models/gemini-8-flash', ['bidiGenerateContent']),
+            ('models/gemini-4-flash', ['generateContent']),
+            ('models/gemini-3-flash', ['generateContent']),
+            ('models/gemini-5-flash-preview', ['generateContent'])]]
+        self.assertEqual(speech.candidate_models(models), ['models/gemini-4-flash', 'models/gemini-3-flash', 'models/gemini-5-flash-preview'])
+
+    async def test_missing_explicit_model_falls_back_to_catalog_and_probes_audio(self):
+        class Missing(Exception): code = 404
+        async def pager():
+            yield NS(name='models/gemini-4-flash', supported_actions=['generateContent'])
+        generate = AsyncMock(side_effect=[Missing('private API body'), NS(text='{"text":"", "language":"none"}')])
+        client = NS(aio=NS(models=NS(generate_content=generate, list=AsyncMock(return_value=pager()))))
+        with patch.dict(agent.os.environ, {'SLAVIK_ASR_MODEL': 'gemini-2.5-flash'}):
+            selected = await speech.prepare_recognizer(client)
+        self.assertEqual(selected, 'models/gemini-4-flash')
+        self.assertEqual(client._slavik_asr_model, selected)
+        self.assertEqual([call.kwargs['model'] for call in generate.call_args_list], ['gemini-2.5-flash', selected])
+        self.assertEqual(generate.call_args.kwargs['contents'].parts[0].inline_data.mime_type, 'audio/wav')
+
+    async def test_forbidden_or_quota_error_is_not_hidden_by_switching_models(self):
+        for code in (403, 429):
+            error = Exception('private response')
+            error.code = code
+            listing = AsyncMock()
+            client = NS(aio=NS(models=NS(generate_content=AsyncMock(side_effect=error), list=listing)))
+            with patch.dict(agent.os.environ, {'SLAVIK_ASR_MODEL': 'gemini-4-flash'}):
+                with self.assertRaisesRegex(RuntimeError, str(code)):
+                    await speech.prepare_recognizer(client)
+            listing.assert_not_awaited()
+
+    async def test_all_404_candidates_fail_preflight_instead_of_connecting_silent_agent(self):
+        class Missing(Exception): code = 404
+        async def pager():
+            yield NS(name='models/gemini-4-flash', supported_actions=['generateContent'])
+        client = NS(aio=NS(models=NS(generate_content=AsyncMock(side_effect=Missing()), list=AsyncMock(return_value=pager()))))
+        with patch.dict(agent.os.environ, {'SLAVIK_ASR_MODEL': ''}), self.assertRaisesRegex(RuntimeError, 'Нет проверенной модели'):
+            await speech.prepare_recognizer(client)
+        self.assertFalse(hasattr(client, '_slavik_asr_model'))

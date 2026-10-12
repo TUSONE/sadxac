@@ -773,6 +773,9 @@ async def run():
     echo = EchoGuard()
     client = genai.Client(api_key=api_key)
     try:
+        if use_asr:
+            from speech_recognition import prepare_recognizer
+            await prepare_recognizer(client)
         await capture.start()
         await player.start()
         async with connect_live(client, config) as session:
@@ -1074,10 +1077,11 @@ async def entry(args):
     try:
         if args.asr_test:
             from google import genai
-            from speech_recognition import SpeechSegmenter, transcribe
+            from speech_recognition import SpeechSegmenter, transcribe, prepare_recognizer
             capture = PulseCapture()
             client = genai.Client(api_key=require_api_key())
             try:
+                await prepare_recognizer(client)
                 segmenter = SpeechSegmenter()
                 await capture.start()
                 print('[ASR-тест] Скажите одну фразу и замолчите. Максимум ожидания20s; аудио не сохраняется.', flush=True)
