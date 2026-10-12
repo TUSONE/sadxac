@@ -17,6 +17,8 @@ environment = {'PATH': '/usr/bin:/bin', 'HOME': pwd.getpwuid(uid).pw_dir,
 args = sys.argv[1:]
 if args == ['prepare']:
     from music_duck import prepare_output, restore_hardware_output
+    subprocess.run(['/usr/bin/pw-metadata', '-n', 'settings', '0', 'clock.force-quantum', '480'],
+                   env=environment, check=True, timeout=5, stdout=subprocess.DEVNULL)
     restore_hardware_output(environment)
     prepare_output(environment)
     raise SystemExit(0)

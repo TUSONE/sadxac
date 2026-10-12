@@ -27,6 +27,12 @@ done
 sudo install -d -o root -g root -m 755 /usr/local/libexec
 sudo install -o root -g root -m 755 slavik-audio /usr/local/libexec/slavik-audio
 sudo install -o root -g root -m 644 music_duck.py /usr/local/libexec/music_duck.py
+voice_home=$(getent passwd voice | cut -d: -f6)
+voice_group=$(id -gn voice)
+quantum_config="$voice_home/.config/pipewire/pipewire.conf.d/91-slavik-quantum.conf"
+if sudo test -f "$quantum_config"; then sudo cat "$quantum_config" > "$backup/voice-quantum.conf"; fi
+sudo -u voice mkdir -p -- "$voice_home/.config/pipewire/pipewire.conf.d"
+sudo install -o voice -g "$voice_group" -m 644 config/voice-quantum.conf "$quantum_config"
 rules=$(mktemp)
 trap 'rm -f "$rules"' EXIT
 cat > "$rules" <<'RULES'

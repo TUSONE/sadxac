@@ -205,3 +205,20 @@ class HardwareOutputTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'physical sink'):
                 music_duck.restore_hardware_output({})
         self.assertEqual(run.call_count, 1)
+
+    def test_correct_output_does_not_rewrite_mixer_or_pulse_levels(self):
+        import tempfile
+        import json
+        import music_duck
+        sinks = [{'name': 'alsa_output.platform-sound_i2s.stereo-fallback',
+                  'base_volume': {'value': 52057}, 'volume': {'left': {'value': 52057}, 'right': {'value': 52057}}, 'mute': False},
+                 {'name': 'voice_aec_sink', 'mute': False}]
+        mixer = ''.join("Simple mixer control '%s',0\n Front Left [0.00dB]\n Front Right [0.00dB]\n" % name for name in ('Headphone', 'Speaker', 'Playback'))
+        mixer += ''.join("Simple mixer control '%s',0\n Playback [on]\n" % name for name in ('Left Output Mixer PCM', 'Right Output Mixer PCM'))
+        calls = []
+        def run(command, **kwargs):
+            calls.append(command)
+            return SimpleNamespace(stdout=json.dumps(sinks) if command[-1] == 'sinks' else 'WM8960' if command[-1] == 'info' else mixer)
+        with tempfile.TemporaryDirectory() as directory, patch.object(music_duck.subprocess, 'run', side_effect=run):
+            music_duck.restore_hardware_output({'XDG_RUNTIME_DIR': directory})
+        self.assertFalse(any('sset' in c or 'set-sink-volume' in c or 'set-sink-mute' in c for c in calls))

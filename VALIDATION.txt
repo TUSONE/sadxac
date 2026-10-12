@@ -82,3 +82,8 @@ voice/music balance require user verification. WAV analyzed numerically, not lis
 to0dB and physical Pulse sink tobase volume, enables PCM/unmute, preserves capture
 settings; missing sink refuses mutations. User sound/reboot verification pending.
 Diagnostics include process owners to investigate possible competing session managers.
+
+78 tests passed: ordinaryvolume overrides wrong model voice target, explicit voice requests
+route independently, correct hardware/Pulse output avoids writes. Persistentvoice PipeWire
+480 config uses verified1.4.2 keys; installer shellsyntax checked. Actual bootapplication,
+post480 errors and dropouts remain unverified. No hardwaregain or ASRmodel changes.

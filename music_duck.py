@@ -1,5 +1,6 @@
 """Pulse stream ducking: attenuate only Spotify, preserve master/user changes."""
 import json
+import re
 import fcntl
 from pathlib import Path
 import tempfile
@@ -202,16 +203,31 @@ def restore_hardware_output(environment):
         raise RuntimeError('WM8960 mixer not found')
     path = Path(environment['XDG_RUNTIME_DIR']) / 'slavik-duck'
     path.mkdir(mode=0o700, exist_ok=True)
+    mixer = run(['/usr/bin/amixer', '-c', card, 'scontents'])
+    controls = {}
+    for block in mixer.split("Simple mixer control"):
+        match = re.match(r"\s+'([^']+)'", block)
+        if match:
+            controls[match[1]] = block
     backup = path / 'output-before-restore.json'
     # Keep the first snapshot in this boot; repeated starts must not overwrite it.
     if not backup.exists():
         with backup.open('x') as f:
             backup.chmod(0o600)
-            json.dump({'physical': physical, 'mixer': run(['/usr/bin/amixer', '-c', card, 'scontents'])}, f)
+            json.dump({'physical': physical, 'mixer': mixer}, f)
     for control, value in [('Headphone', '0dB'), ('Speaker', '0dB'), ('Playback', '100%'),
                            ('Left Output Mixer PCM', 'on'), ('Right Output Mixer PCM', 'on')]:
-        run(['/usr/bin/amixer', '-c', card, 'sset', control, value])
-    run(['/usr/bin/pactl', 'set-sink-volume', physical['name'], str(base)])
-    run(['/usr/bin/pactl', 'set-sink-mute', physical['name'], '0'])
-    run(['/usr/bin/pactl', 'set-sink-mute', 'voice_aec_sink', '0'])
+        block = controls.get(control, '')
+        levels = re.findall(r'\[([-+]?\d+(?:\.\d+)?)dB\]', block)
+        already_set = (len(levels) >= 2 and all(abs(float(v)) < .01 for v in levels)
+                       if value != 'on' else '[on]' in block and '[off]' not in block)
+        if not already_set:
+            run(['/usr/bin/amixer', '-c', card, 'sset', control, value])
+    if any(v['value'] != base for v in physical.get('volume', {}).values()):
+        run(['/usr/bin/pactl', 'set-sink-volume', physical['name'], str(base)])
+    if physical.get('mute') is not False:
+        run(['/usr/bin/pactl', 'set-sink-mute', physical['name'], '0'])
+    aec = next((s for s in sinks if s['name'] == 'voice_aec_sink'), None)
+    if aec and aec.get('mute') is not False:
+        run(['/usr/bin/pactl', 'set-sink-mute', 'voice_aec_sink', '0'])
     print('WM8960: Headphone/Speaker 0 dB, PCM включён, физический выход восстановлен.')

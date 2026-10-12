@@ -64,6 +64,20 @@ class VolumeTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('Не выполнено', player.voice_volume({'action': 'set', 'percent': value}))
         self.assertEqual(player.voice_percent, 30)
 
+    async def test_ordinary_volume_overrides_wrong_model_target_without_changing_voice(self):
+        player = a.PulsePlayer()
+        called = []
+        await a.route_volume({'action': 'up', 'target': 'voice'},
+                             lambda args: called.append(args) or 'music50', player,
+                             'Славик, сделай громкость 50')
+        self.assertEqual(called, [{'action': 'set_volume', 'percent': 50}])
+        self.assertEqual(player.voice_percent, 40)
+        await a.route_volume({'action': 'down', 'target': 'music'},
+                             lambda args: called.append(args) or 'music', player,
+                             'Славик говори тише')
+        self.assertEqual(player.voice_percent, 30)
+        self.assertEqual(len(called), 1)
+
 class WakeTests(unittest.TestCase):
     def test_wakes_and_background(self):
         for text in ['Эй Славка!', 'Славик', 'Ебаные славики', 'Ёбаные славики', 'Славуха', 'Hey Slavik', 'Славка, как дела?', 'Как дела, Славка?', 'Включи, Славка, музыку', 'How are you, Slavka?']:

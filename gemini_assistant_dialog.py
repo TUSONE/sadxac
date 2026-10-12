@@ -227,6 +227,7 @@ class WakeGate:
         self.music_finish_pending = False
         self.close_when_drained = False
         self.input_buf = ""
+        self.last_utterance = ""
         self.command_authorized = False
 
     @property
@@ -238,6 +239,7 @@ class WakeGate:
         return self.awake or self.command_authorized
 
     def complete_turn(self):
+        self.last_utterance = ""
         if self.music_finish_pending:
             self.close_when_drained = True
             self.music_finish_pending = False
@@ -255,6 +257,7 @@ class WakeGate:
         now = time.monotonic()
         if now - getattr(self, "last_input", 0) > 2:
             self.input_buf = ""
+        self.last_utterance = (self.last_utterance + " " + text if now - getattr(self, "last_input", 0) <= 2 else text)[-500:]
         self.last_input = now
         self.input_buf = (self.input_buf + text)[-300:]
         if contains_wake(text) or contains_wake(self.input_buf):
@@ -504,7 +507,8 @@ async def receiver(session, player, gate, tool_queue=None):
                 for call in calls:
                     event_log("tool_received", tool=call.name, id=call.id, authorized=gate.response_allowed,
                               action=(call.args or {}).get("action"), query=(call.args or {}).get("query"))
-                    tool_queue.put_nowait((call, gate.response_allowed))
+                    tool_queue.put_nowait((call, gate.response_allowed, gate.last_utterance)
+                                          if call.name in ("audio_volume", "voice_volume") else (call, gate.response_allowed))
             # Freeze the gate for each model turn. Never release old hidden audio
             # after a later wake word, and never truncate an authorized long reply.
             if not interrupted:
@@ -542,7 +546,9 @@ async def receiver(session, player, gate, tool_queue=None):
 async def tool_worker(session, queue, spotify, player=None, gate=None):
     from google.genai import types
     while True:
-        call, authorized = await queue.get()
+        item = await queue.get()
+        call, authorized = item[:2]
+        utterance = item[2] if len(item) > 2 else None
         event_log("tool_start", tool=call.name, id=call.id, authorized=authorized)
         try:
             if not authorized:
@@ -550,8 +556,10 @@ async def tool_worker(session, queue, spotify, player=None, gate=None):
             elif call.name == "wake_assistant":
                 result = ("Обращение принято. Можно ответить и выполнить просьбу пользователя."
                           if audio_wake_enabled() and (call.args or {}).get("addressed") is True else "Явное обращение не подтверждено.")
-            elif call.name == "audio_volume":
-                result = await route_volume(dict(call.args or {}), spotify, player)
+            elif call.name in ("audio_volume", "voice_volume"):
+                args = dict(call.args or {})
+                args['target'] = 'voice' if call.name == 'voice_volume' else 'music'
+                result = await route_volume(args, spotify, player, utterance)
             elif call.name != "spotify_command" or spotify is None:
                 result = "Неизвестный инструмент."
             else:
@@ -628,8 +636,20 @@ async def run():
         await client.aio.aclose()
 
 
-async def route_volume(args, spotify, player):
+async def route_volume(args, spotify, player, utterance=None):
+    args = dict(args)
     target = args.get("target", "music")
+    text = normalize_text(utterance or '')
+    explicit_voice = bool(re.search(r"\b(?:говори|голос|голоса|голосом|speak|voice)\b", text))
+    ordinary_volume = bool(re.search(r"\b(?:громкость|погромче|потише|громче|тише|музыку|музыка|volume|music|louder|quieter)\b", text))
+    explicit_music = bool(re.search(r'\b(?:музыка|музыки|музыку|music)\b', text))
+    if explicit_voice and not explicit_music:
+        target = 'voice'
+    elif ordinary_volume and not explicit_voice:
+        target = 'music'
+    number = re.search(r'\bгромкость\s+(?:на\s+)?(\d{1,3})\b', text)
+    if number and not (explicit_voice and explicit_music):
+        args.update(action='set', percent=int(number[1]))
     if target == "voice":
         return player.voice_volume(args) if player else "Не выполнено: голосовой выход недоступен."
     if target != "music":
@@ -646,11 +666,14 @@ AUDIO_DECLARATIONS = [{"name": "wake_assistant",
     "description": "Подтверди явно услышанное В АУДИО обращение пользователя по имени Славик/Славка. Транскрипция может быть ошибочной. Вызывай перед ответом/командами после обращения; не вызывай для фоновой речи, музыки, своего голоса или команды без обращения вне окна диалога.",
     "parameters": {"type": "OBJECT", "properties": {"addressed": {"type": "BOOLEAN"}}, "required": ["addressed"]}},
     {"name": "audio_volume",
-    "description": "Громкость: обычные просьбы погромче/потише/сделай громкость относятся ТОЛЬКО к музыке (target=music). Говори тише/громче, громкость твоего голоса относятся к target=voice. Голос по умолчанию 40%. up/down шаг 10, set с percent 0..100.",
+    "description": "ТОЛЬКО громкость музыки Spotify: погромче, потише, сделай громкость50. Никогда не меняет голос Славика. up/down шаг10, set percent0..100.",
     "parameters": {"type": "OBJECT", "properties": {
         "action": {"type": "STRING", "enum": ["up", "down", "set"]},
-        "target": {"type": "STRING", "enum": ["music", "voice"], "description": "По умолчанию music; voice только для просьб изменить голос Славика"},
-        "percent": {"type": "INTEGER", "description": "Абсолютная громкость 0..100 для set"}}, "required": ["action"]}}]
+        "percent": {"type": "INTEGER", "description": "Абсолютная громкость 0..100 для set"}}, "required": ["action"]}}, {"name": "voice_volume",
+    "description": "ТОЛЬКО голос Славика. Вызывай для говори тише/громче, громкость твоего голоса. Не вызывай для обычной громкости музыки. Голос по умолчанию40%. up/down шаг10, set percent0..100.",
+    "parameters": {"type": "OBJECT", "properties": {
+        "action": {"type": "STRING", "enum": ["up", "down", "set"]},
+        "percent": {"type": "INTEGER"}}, "required": ["action"]}}]
 SPOTIFY_DECLARATIONS = [{"name": "spotify_command",
     "description": "Spotify: следующий/предыдущий трек next/previous, pause/resume/play_pause/stop; play_track по названию; play_playlist по названию; play_artist; play_mood для настроения (например грустная музыка: query sad songs). play_from_playlist выбирает трек в текущем плейлисте по query или номеру track_number (от 1); playlist_query выбирает другой плейлист. volume_up/down/set_volume меняют только музыку Spotify. Не утверждай успех до результата инструмента.",
     "parameters": {"type": "OBJECT", "properties": {
@@ -682,7 +705,7 @@ def make_config(enable_spotify=False):
     from google.genai import types
     return types.LiveConnectConfig(
         response_modalities=[types.Modality.AUDIO],
-        system_instruction=system_instruction() + " Для громкости используй audio_volume: обычные погромче/потише/громкость N — target=music; говори тише/громче — target=voice. Не меняй голос при просьбе изменить музыку. Сообщай результат только после инструмента." + (
+        system_instruction=system_instruction() + " Для громкости используй audio_volume: обычные погромче/потише/громкость N — audio_volume; говори тише/громче и громкость твоего голоса — voice_volume. Не меняй голос при просьбе изменить музыку. Сообщай результат только после инструмента." + (
             " После принятого запуска/выбора музыки коротко назови результат и пожелай приятного прослушивания. Не задавай «что-нибудь ещё?», не продолжай беседу сам. При подтверждённой паузе скажи «Поставил на паузу». Если команда принята, но чтение статуса не удалось, скажи «Команда отправлена, состояние пока не подтверждено», а не «не могу поставить». Для музыкальных просьб используй spotify_command. На вопросы что играет, кто исполнитель, какой момент, стоит ли пауза ВСЕГДА сначала вызывай action=status; сообщай устройство, трек, исполнителя и позицию по свежему результату. Не считай принятую команду отказом из-за ошибки чтения статуса. Подтверждённую паузу называй паузой; при неопределённом результате честно сообщай, что подтверждения нет. Не говори о невозможности действия до получения результата инструмента; настроение превращай в конкретный запрос плейлиста. Для выбора другой песни из текущего плейлиста используй play_from_playlist, чтобы сохранить очередь. Просьба включить исполнителя означает play_artist, а не play_track; Кизару — kizaru. Не заменяй запрошенного исполнителя другим. Сообщай имя и успех строго по результату инструмента; при несовпадении имени объясни ошибку, не заявляй, что включил запрошенного исполнителя."
             if enable_spotify else " Управление Spotify сейчас недоступно; не заявляй, что включил музыку."
         ),
