@@ -176,3 +176,32 @@ class OutputMigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch.object(music_duck.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps([sink]))) as pulse:
             music_duck.prepare_output({'XDG_RUNTIME_DIR': directory})
         self.assertEqual(pulse.call_count, 1)
+
+
+class HardwareOutputTests(unittest.TestCase):
+    def test_zero_headphone_and_attenuated_physical_sink_are_repaired_without_capture_change(self):
+        import tempfile
+        import json
+        import music_duck
+        sink = {'name': 'alsa_output.platform-sound_i2s.stereo-fallback',
+                'base_volume': {'value': 52057}, 'volume': {'left': {'value': 26214}}}
+        calls = []
+        def run(command, **kwargs):
+            calls.append(command)
+            if command[-1] == 'sinks':
+                return SimpleNamespace(stdout=json.dumps([sink]))
+            if command[-1] == 'info':
+                return SimpleNamespace(stdout='Card WM8960-2Mic')
+            return SimpleNamespace(stdout='Headphone:0')
+        with tempfile.TemporaryDirectory() as directory, patch.object(music_duck.subprocess, 'run', side_effect=run):
+            music_duck.restore_hardware_output({'XDG_RUNTIME_DIR': directory})
+        self.assertIn(['/usr/bin/amixer', '-c', 'WM89602Mic', 'sset', 'Headphone', '0dB'], calls)
+        self.assertIn(['/usr/bin/pactl', 'set-sink-volume', sink['name'], '52057'], calls)
+        self.assertFalse(any('Capture' in c or 'set-source-volume' in c for c in calls))
+
+    def test_missing_card_or_sink_never_changes_levels(self):
+        import music_duck
+        with patch.object(music_duck.subprocess, 'run', return_value=SimpleNamespace(stdout='[]')) as run:
+            with self.assertRaisesRegex(RuntimeError, 'physical sink'):
+                music_duck.restore_hardware_output({})
+        self.assertEqual(run.call_count, 1)

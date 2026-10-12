@@ -182,3 +182,36 @@ def prepare_output(environment):
                 pass
             raise RuntimeError('Не удалось разделить уровни; проверьте music-levels.sh.') from None
         print('Убран двойной уровень громкости: AEC-выход 100%; громкость текущих потоков сохранена.')
+
+
+def restore_hardware_output(environment):
+    """Restore the WM8960 output path that may be zeroed by boot-time state restore."""
+    def run(command):
+        return subprocess.run(command, env=environment, capture_output=True,
+                              text=True, timeout=3, check=True).stdout
+    sinks = json.loads(run(['/usr/bin/pactl', '--format=json', 'list', 'sinks']))
+    physical = next((s for s in sinks if s['name'] == 'alsa_output.platform-sound_i2s.stereo-fallback'), None)
+    if physical is None:
+        raise RuntimeError('Missing WM8960 physical sink')
+    base = physical['base_volume']['value']
+    if type(base) is not int or not 0 < base <= 65536:
+        raise RuntimeError('Invalid WM8960 base volume')
+    card = 'WM89602Mic'
+    info = run(['/usr/bin/amixer', '-c', card, 'info'])
+    if 'WM8960' not in info:
+        raise RuntimeError('WM8960 mixer not found')
+    path = Path(environment['XDG_RUNTIME_DIR']) / 'slavik-duck'
+    path.mkdir(mode=0o700, exist_ok=True)
+    backup = path / 'output-before-restore.json'
+    # Keep the first snapshot in this boot; repeated starts must not overwrite it.
+    if not backup.exists():
+        with backup.open('x') as f:
+            backup.chmod(0o600)
+            json.dump({'physical': physical, 'mixer': run(['/usr/bin/amixer', '-c', card, 'scontents'])}, f)
+    for control, value in [('Headphone', '0dB'), ('Speaker', '0dB'), ('Playback', '100%'),
+                           ('Left Output Mixer PCM', 'on'), ('Right Output Mixer PCM', 'on')]:
+        run(['/usr/bin/amixer', '-c', card, 'sset', control, value])
+    run(['/usr/bin/pactl', 'set-sink-volume', physical['name'], str(base)])
+    run(['/usr/bin/pactl', 'set-sink-mute', physical['name'], '0'])
+    run(['/usr/bin/pactl', 'set-sink-mute', 'voice_aec_sink', '0'])
+    print('WM8960: Headphone/Speaker 0 dB, PCM включён, физический выход восстановлен.')

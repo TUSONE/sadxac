@@ -16,7 +16,8 @@ environment = {'PATH': '/usr/bin:/bin', 'HOME': pwd.getpwuid(uid).pw_dir,
                'PULSE_SERVER': f'unix:/run/user/{uid}/pulse/native'}
 args = sys.argv[1:]
 if args == ['prepare']:
-    from music_duck import prepare_output
+    from music_duck import prepare_output, restore_hardware_output
+    restore_hardware_output(environment)
     prepare_output(environment)
     raise SystemExit(0)
 if args == ['duck']:

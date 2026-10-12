@@ -48,7 +48,7 @@ def snapshot():
               'local_librespot': command(['/usr/local/libexec/slavik-librespot', '--version']),
               'service': command(['systemctl', 'show', 'slavik-spotify', '-p', 'ActiveState',
                                   '-p', 'SubState', '-p', 'NRestarts', '-p', 'MainPID']),
-              'processes': command(['ps', '-eo', 'pid,comm,pcpu,pmem', '--sort=-pcpu']),
+              'processes': command(['ps', '-eo', 'user,pid,comm,pcpu,pmem', '--sort=-pcpu']),
               'mixer': command(['amixer', '-c', '0', 'scontents'])}
     try:
         uid = pwd.getpwnam('voice').pw_uid
