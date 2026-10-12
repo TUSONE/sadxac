@@ -240,6 +240,36 @@ def search_uri(kind, query):
     return items[0]['uri'], name
 
 
+def related_queue(candidates, seed_uri):
+    """Resolve a bounded, model-curated queue; exact title AND artist required."""
+    uris, names, missing = [seed_uri], [], 0
+    if not isinstance(candidates, list):
+        return uris, names, missing
+    for entry in candidates[:5]:
+        if not isinstance(entry, dict):
+            missing += 1
+            continue
+        title, artist = entry.get('title'), entry.get('artist')
+        if not all(isinstance(x, str) and 0 < len(x.strip()) <= 150 for x in (title, artist)):
+            missing += 1
+            continue
+        try:
+            page = api('GET', '/search', params={'q': f'track:{title} artist:{artist_key(artist)}',
+                                                'type': 'track', 'limit': 10}) or {}
+            found = [t for t in page.get('tracks', {}).get('items', []) if t and t.get('uri') and
+                     artist_key(t.get('name', '')) == artist_key(title) and
+                     any(artist_key(a.get('name', '')) == artist_key(artist) for a in t.get('artists', []))]
+            if not found:
+                missing += 1
+            elif found[0]['uri'] not in uris:
+                uris.append(found[0]['uri'])
+                names.append(found[0]['name'] + ' — ' + artist)
+        except SpotifyError:
+            missing += 1
+            break
+    return uris, names, missing
+
+
 def playlist_selection(args, selected=None):
     """Retain playlist context instead of replacing its queue with a single URI."""
     if args.get('playlist_query'):
@@ -367,8 +397,14 @@ def spotify_command(args):
         if action in ('play_track', 'play_artist', 'play_playlist'):
             kind = {'play_track': 'track', 'play_artist': 'artist', 'play_playlist': 'playlist'}[action]
             uri, name = search_uri(kind, args.get('query'))
-            api('PUT', '/me/player/play', {'uris': [uri]} if kind == 'track' else {'context_uri': uri}, params)
-            return f'Spotify принял команду воспроизведения: {name}.'
+            uris, names, missing = related_queue(args.get('related_tracks'), uri) if kind == 'track' else ([], [], 0)
+            api('PUT', '/me/player/play', {'uris': uris} if kind == 'track' else {'context_uri': uri}, params)
+            result = f'Spotify принял команду воспроизведения: {name}.'
+            if names or missing:
+                result += ' Подборка: ' + ('; '.join(names) if names else 'похожие песни не найдены')
+                if missing:
+                    result += f'; не удалось подобрать: {missing}. Запуск основного трека принят.'
+            return result
         if action == 'play_pause':
             current = api('GET', '/me/player') or {}
             if (current.get('device') or {}).get('id') != selected:

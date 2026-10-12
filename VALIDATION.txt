@@ -1,3 +1,5 @@
+Current assistant rework: 88 unittest tests passed; pip check passed. Weather/search schemas, structured Spotify outcomes, call-id replay, curated queue matching, calibrated channel capture, reply-end ducking and fixed 100% output policy covered. Open-Meteo live smoke blocked by cloud egress proxy 403; Gemini key absent. Board audio, maximal-volume ASR and actual generated confirmations NOT validated. Older results below are historical.
+
 Local validation: Linux x86_64, Python 3.12.14, google-genai 2.29.0
 49 unittest checks passed: PCM, wake at any position/5s idle timer, delayed command authorization, initial language-hint fallback, microphone DSP/calibration, Spotify PKCE/refresh/targeting, playlist context selection/pagination, mood playlist lookup, master-volume bridge validation/clamping, diagnostic allowlists/error bounds and Spotify status with/without playback.
 SDK LiveConnectConfig validated with RU/EN hints, audio_volume and Spotify function declarations.

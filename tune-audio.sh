@@ -11,15 +11,7 @@ voice_pulse() {
 }
 output=alsa_output.platform-sound_i2s.stereo-fallback
 input=alsa_input.platform-sound_i2s.stereo-fallback
-# Resolve the physical sink base volume before changing anything. Pulse 100%
-# is +6 dB on this WM8960, whereas its base_volume corresponds to hardware 0 dB.
-base=$(voice_pulse --format=json list sinks | python3 -c '
-import json, sys
-sink = next(s for s in json.load(sys.stdin) if s["name"] == sys.argv[1])
-value = sink["base_volume"]["value"]
-assert isinstance(value, int) and 0 < value <= 65536
-print(value)
-' "$output")
+# Physical output fixed at 100%; music and voice use separate stream levels.
 for control in Headphone Speaker Playback 'Left Output Mixer PCM' 'Right Output Mixer PCM'; do
     sudo amixer -c 0 sget "$control" >/dev/null
 done
@@ -36,12 +28,13 @@ sudo alsactl -f "$backup/alsa.state" store 0
 voice_pulse --format=json list sinks > "$backup/sinks.json"
 voice_pulse --format=json list sources > "$backup/sources.json"
 for control in Headphone Speaker; do
-    sudo amixer -c 0 sset "$control" 0dB >/dev/null
+    sudo amixer -c 0 sset "$control" 100% >/dev/null
 done
 sudo amixer -c 0 sset Playback 100% >/dev/null
 sudo amixer -c 0 sset 'Left Output Mixer PCM' on >/dev/null
 sudo amixer -c 0 sset 'Right Output Mixer PCM' on >/dev/null
-voice_pulse set-sink-volume "$output" "$base"
+voice_pulse set-sink-volume "$output" 100%
+voice_pulse set-sink-volume voice_aec_sink 100%
 voice_pulse set-sink-mute "$output" 0
 if [[ $# == 0 ]]; then
     # Reduce the diagnosed +30 dB PGA / +29 dB boost. Recalibrate DSP afterwards.
@@ -52,7 +45,7 @@ if [[ $# == 0 ]]; then
 fi
 sudo alsactl store 0
 printf 'Резервная копия: %s\n' "$backup"
-printf '%s\n' 'Аппаратный выход: 0 dB. Общая громкость voice_aec_sink сохранена.'
+printf '%s\n' 'Физический Pulse-выход и voice_aec_sink: 100%.'
 if [[ $# == 0 ]]; then
     printf '%s\n' 'Вход: Pulse 80%, boost 20 dB. Остановите музыку и повторите --calibrate-mic.'
 fi

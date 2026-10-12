@@ -147,7 +147,7 @@ class ServiceTests(unittest.TestCase):
 
 
 class OutputMigrationTests(unittest.TestCase):
-    def test_existing_music_level_is_preserved_when_master_becomes_unity(self):
+    def test_master_becomes_unity_without_attenuating_music(self):
         import tempfile
         import json
         import music_duck
@@ -165,7 +165,7 @@ class OutputMigrationTests(unittest.TestCase):
             return SimpleNamespace(stdout='')
         with tempfile.TemporaryDirectory() as directory, patch.object(music_duck.subprocess, 'run', side_effect=pulse):
             music_duck.prepare_output({'XDG_RUNTIME_DIR': directory})
-        self.assertEqual(calls[-2][-4:], ['set-sink-input-volume', '1', '26214', '26214'])
+        self.assertFalse(any('set-sink-input-volume' in c for c in calls))
         self.assertEqual(calls[-1][-3:], ['set-sink-volume', 'voice_aec_sink', '100%'])
 
     def test_unity_master_does_not_attenuate_music_on_each_restart(self):
@@ -195,8 +195,8 @@ class HardwareOutputTests(unittest.TestCase):
             return SimpleNamespace(stdout='Headphone:0')
         with tempfile.TemporaryDirectory() as directory, patch.object(music_duck.subprocess, 'run', side_effect=run):
             music_duck.restore_hardware_output({'XDG_RUNTIME_DIR': directory})
-        self.assertIn(['/usr/bin/amixer', '-c', 'WM89602Mic', 'sset', 'Headphone', '0dB'], calls)
-        self.assertIn(['/usr/bin/pactl', 'set-sink-volume', sink['name'], '52057'], calls)
+        self.assertIn(['/usr/bin/amixer', '-c', 'WM89602Mic', 'sset', 'Headphone', '100%'], calls)
+        self.assertIn(['/usr/bin/pactl', 'set-sink-volume', sink['name'], '65536'], calls)
         self.assertFalse(any('Capture' in c or 'set-source-volume' in c for c in calls))
 
     def test_missing_card_or_sink_never_changes_levels(self):
@@ -211,9 +211,9 @@ class HardwareOutputTests(unittest.TestCase):
         import json
         import music_duck
         sinks = [{'name': 'alsa_output.platform-sound_i2s.stereo-fallback',
-                  'base_volume': {'value': 52057}, 'volume': {'left': {'value': 52057}, 'right': {'value': 52057}}, 'mute': False},
+                  'base_volume': {'value': 52057}, 'volume': {'left': {'value': 65536}, 'right': {'value': 65536}}, 'mute': False},
                  {'name': 'voice_aec_sink', 'mute': False}]
-        mixer = ''.join("Simple mixer control '%s',0\n Front Left [0.00dB]\n Front Right [0.00dB]\n" % name for name in ('Headphone', 'Speaker', 'Playback'))
+        mixer = ''.join("Simple mixer control '%s',0\n Front Left [100%%] [6.00dB]\n Front Right [100%%] [6.00dB]\n" % name for name in ('Headphone', 'Speaker', 'Playback'))
         mixer += ''.join("Simple mixer control '%s',0\n Playback [on]\n" % name for name in ('Left Output Mixer PCM', 'Right Output Mixer PCM'))
         calls = []
         def run(command, **kwargs):

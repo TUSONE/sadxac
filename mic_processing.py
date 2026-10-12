@@ -48,6 +48,7 @@ class InputProcessor:
     def __init__(self, gain=1.0):
         if not math.isfinite(gain) or not .25 <= gain <= 4:
             raise ValueError('Mic gain must be between 0.25 and 4')
+        self.channel = CHANNEL
         self.gain = gain
         self.highpass = HighPass()
         self.limited_frames = 0
@@ -97,6 +98,25 @@ def calibration(noise, speech, source):
             'raw_clipping_fraction': clipping, 'speech_peak': round(peak, 1)}
 
 
+def best_calibration(noise, speech, source):
+    profiles, errors = [], []
+    for channel in (0, 1):
+        try:
+            profile = calibration(noise[channel], speech[channel], source)
+            profile['channel'] = channel
+            profiles.append(profile)
+        except RuntimeError as error:
+            errors.append(str(error))
+    if not profiles:
+        raise RuntimeError('Оба микрофона не прошли калибровку: ' + '; '.join(errors))
+    # Prefer right on a near tie to avoid changing channels for measurement noise.
+    best = max(profiles, key=lambda p: p['snr_db'])
+    right = next((p for p in profiles if p['channel'] == 1), None)
+    if right and best['snr_db'] - right['snr_db'] < 3:
+        best = right
+    return best
+
+
 def save_profile(profile, path=DEFAULT_PATH):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -112,21 +132,20 @@ def save_profile(profile, path=DEFAULT_PATH):
 
 def load_processor(source):
     override = os.getenv('SLAVIK_MIC_GAIN')
-    if override:
-        return InputProcessor(float(override))
     path = Path(os.getenv('SLAVIK_MIC_CALIBRATION', str(DEFAULT_PATH)))
     if not path.exists():
         print('[Mic] Нет калибровки: gain=1, high-pass=60Hz. Запустите --calibrate-mic.', flush=True)
-        return InputProcessor()
+        return InputProcessor(float(override) if override else 1.0)
     try:
         profile = json.loads(path.read_text())
-        if (profile['schema'], profile['source'], profile['rate'], profile['channel']) != (SCHEMA, source, RATE, CHANNEL):
+        if (profile['schema'], profile['source'], profile['rate']) != (SCHEMA, source, RATE) or type(profile['channel']) is not int or profile['channel'] not in (0, 1):
             raise ValueError('Calibration device/format mismatch')
-        processor = InputProcessor(float(profile['gain']))
+        processor = InputProcessor(float(override or profile['gain']))
+        processor.channel = profile['channel']
     except (KeyError, ValueError, TypeError, OSError):
         print('[Mic] Профиль не подходит: gain=1. Повторите --calibrate-mic.', flush=True)
-        return InputProcessor()
-    print(f"[Mic] gain={processor.gain:g}, SNR={profile.get('snr_db', '?')}dB, high-pass=60Hz", flush=True)
+        return InputProcessor(float(override) if override else 1.0)
+    print(f"[Mic] channel={processor.channel}, gain={processor.gain:g}, SNR={profile.get('snr_db', '?')}dB, high-pass=60Hz", flush=True)
     return processor
 
 

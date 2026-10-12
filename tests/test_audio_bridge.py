@@ -23,14 +23,11 @@ class AudioBridgeTests(unittest.TestCase):
                 runpy.run_path(str(Path(__file__).resolve().parents[1] / 'slavik-audio'), run_name='__main__')
         return calls, stopped.exception.code, output.getvalue()
 
-    def test_master_volume_is_clamped_and_only_targets_aec_sink(self):
-        calls, code, text = self.bridge('up')
-        self.assertEqual(code, 0)
-        self.assertIn('100%', text)
-        self.assertEqual(calls[1], ['/usr/bin/pactl', 'set-sink-volume', 'voice_aec_sink', '100%'])
-        calls, code, text = self.bridge('down', current=0)
-        self.assertIn('0%', text)
-        self.assertEqual(calls[1][-1], '0%')
+    def test_legacy_master_volume_cannot_change_fixed_outputs(self):
+        for value in ('up', 'down', '50'):
+            calls, code, text = self.bridge(value)
+            self.assertIn('fixed at 100%', code)
+            self.assertEqual(calls, [])
 
     def test_invalid_volume_never_runs_pactl(self):
         for value in ['101', '-1', '100; whoami', '１']:

@@ -72,7 +72,7 @@ async def run_test(command, stop_process):
         report[name] = await measure(command, stop_process, seconds)
         print(json.dumps({name: report[name]}, ensure_ascii=False), flush=True)
     print('AEC_REPORT=' + json.dumps(report, ensure_ascii=False), flush=True)
-    print('Для распознавания используется right. Сравните quiet/music/speech_music: '
+    print('Канал распознавания указан в строке [Mic] при запуске. Сравните quiet/music/speech_music: '
           'AEC должен уменьшать музыку и сохранять рост уровня при вашей речи. '
           'Разница physical/aec сама по себе не доказывает эффективность: у узлов может отличаться усиление. '
           'Пришлите AEC_REPORT; по нему выберем дальнейшую настройку.', flush=True)

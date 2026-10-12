@@ -36,24 +36,7 @@ if args == ['check']:
     print('AEC source/sink present under voice')
     raise SystemExit(0)
 if len(args) == 2 and args[0] == 'volume':
-    value = args[1]
-    if value not in ('up', 'down') and not (value.isascii() and value.isdecimal() and 0 <= int(value) <= 100):
-        raise SystemExit('Expected volume up | down | 0..100')
-    result = subprocess.run(['/usr/bin/pactl', '--format=json', 'list', 'sinks'],
-                            env=environment, capture_output=True, text=True, check=True, timeout=3)
-    sink = next((s for s in json.loads(result.stdout) if s['name'] == 'voice_aec_sink'), None)
-    if sink is None:
-        raise SystemExit('Missing voice_aec_sink')
-    # Pulse normal volume = 65536. Keep left/right balanced and never amplify above 100%.
-    current = round(sum(v['value'] for v in sink['volume'].values()) /
-                    len(sink['volume']) * 100 / 65536)
-    amount = max(0, min(100, current + (10 if value == 'up' else -10))) if value in ('up', 'down') else int(value)
-    subprocess.run(['/usr/bin/pactl', 'set-sink-volume', 'voice_aec_sink', f'{amount}%'],
-                   env=environment, check=True, timeout=3)
-    subprocess.run(['/usr/bin/pactl', 'set-sink-mute', 'voice_aec_sink', '0'],
-                   env=environment, check=True, timeout=3)
-    print(f'Общая громкость: {amount}%.')
-    raise SystemExit(0)
+    raise SystemExit('Master output is fixed at 100%. Use Spotify music volume or voice_volume.')
 if len(args) != 2 or args[0] not in ('capture', 'playback') or not re.fullmatch(r'[A-Za-z0-9_.-]+', args[1]):
     raise SystemExit('Expected: check | capture SOURCE | playback SINK')
 if args[0] == 'capture':

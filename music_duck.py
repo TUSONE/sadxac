@@ -57,8 +57,8 @@ class Ducker:
             for key, stream in present.items():
                 if key not in self.saved:
                     original = volumes(stream)
-                    # Pulse volume is cubic: .63 of control ~= .25 amplitude (-12 dB).
-                    reduced = [round(v * .63) for v in original]
+                    # Pulse volume is cubic: .35 control ~= .043 amplitude (-27 dB).
+                    reduced = [round(v * .35) for v in original]
                     self.saved[key] = original, reduced
                     self.persist()  # journal BEFORE changing Pulse volume
                     self.change(stream['index'], reduced)
@@ -140,7 +140,7 @@ def _serve(environment, store):
 
 
 def prepare_output(environment):
-    """Move legacy master attenuation into existing streams; future voice is independent."""
+    """Master outputs stay at unity; volume changes belong to individual streams."""
     def pulse(*args):
         return subprocess.run(['/usr/bin/pactl', *args], env=environment,
                               capture_output=True, text=True, timeout=3, check=True).stdout
@@ -149,40 +149,9 @@ def prepare_output(environment):
         sink = next((s for s in sinks if s['name'] == 'voice_aec_sink'), None)
         if sink is None:
             raise RuntimeError('Missing voice_aec_sink')
-        master = {ch: v['value'] for ch, v in sink['volume'].items()}
-        if all(v == 65536 for v in master.values()):
-            print('Общий AEC-выход: 100%; голос и музыка регулируются отдельно.')
-            return
-        streams = [s for s in json.loads(pulse('--format=json', 'list', 'sink-inputs'))
-                   if s.get('sink') == sink['index']]
-        plan = []
-        fallback = sum(master.values()) / len(master)
-        for stream in streams:
-            old = volumes(stream)
-            new = [round(v['value'] * master.get(ch, fallback) / 65536)
-                   for ch, v in stream['volume'].items()]
-            plan.append((stream['index'], old, new))
-        backup = Path(environment['XDG_RUNTIME_DIR']) / 'slavik-duck' / 'master-migration.json'
-        backup.write_text(json.dumps({'sink': sink['index'], 'master': master, 'streams': plan}))
-        backup.chmod(0o600)
-        changed = []
-        try:
-            for index, old, new in plan:
-                changed.append((index, old))
-                pulse('set-sink-input-volume', str(index), *(str(v) for v in new))
+        if any(v['value'] != 65536 for v in sink['volume'].values()):
             pulse('set-sink-volume', 'voice_aec_sink', '100%')
-        except (OSError, subprocess.SubprocessError):
-            for index, old in reversed(changed):
-                try:
-                    pulse('set-sink-input-volume', str(index), *(str(v) for v in old))
-                except (OSError, subprocess.SubprocessError):
-                    pass
-            try:
-                pulse('set-sink-volume', 'voice_aec_sink', *(str(v) for v in master.values()))
-            except (OSError, subprocess.SubprocessError):
-                pass
-            raise RuntimeError('Не удалось разделить уровни; проверьте music-levels.sh.') from None
-        print('Убран двойной уровень громкости: AEC-выход 100%; громкость текущих потоков сохранена.')
+        print('Общий AEC-выход: 100%; голос и музыка регулируются отдельно.')
 
 
 def restore_hardware_output(environment):
@@ -194,9 +163,7 @@ def restore_hardware_output(environment):
     physical = next((s for s in sinks if s['name'] == 'alsa_output.platform-sound_i2s.stereo-fallback'), None)
     if physical is None:
         raise RuntimeError('Missing WM8960 physical sink')
-    base = physical['base_volume']['value']
-    if type(base) is not int or not 0 < base <= 65536:
-        raise RuntimeError('Invalid WM8960 base volume')
+    base = 65536  # Explicit user policy: physical Pulse output stays at 100%.
     card = 'WM89602Mic'
     info = run(['/usr/bin/amixer', '-c', card, 'info'])
     if 'WM8960' not in info:
@@ -215,11 +182,11 @@ def restore_hardware_output(environment):
         with backup.open('x') as f:
             backup.chmod(0o600)
             json.dump({'physical': physical, 'mixer': mixer}, f)
-    for control, value in [('Headphone', '0dB'), ('Speaker', '0dB'), ('Playback', '100%'),
+    for control, value in [('Headphone', '100%'), ('Speaker', '100%'), ('Playback', '100%'),
                            ('Left Output Mixer PCM', 'on'), ('Right Output Mixer PCM', 'on')]:
         block = controls.get(control, '')
-        levels = re.findall(r'\[([-+]?\d+(?:\.\d+)?)dB\]', block)
-        already_set = (len(levels) >= 2 and all(abs(float(v)) < .01 for v in levels)
+        levels = re.findall(r'\[(\d+)%\]', block)
+        already_set = (len(levels) >= 2 and all(int(v) == 100 for v in levels)
                        if value != 'on' else '[on]' in block and '[off]' not in block)
         if not already_set:
             run(['/usr/bin/amixer', '-c', card, 'sset', control, value])
@@ -230,4 +197,4 @@ def restore_hardware_output(environment):
     aec = next((s for s in sinks if s['name'] == 'voice_aec_sink'), None)
     if aec and aec.get('mute') is not False:
         run(['/usr/bin/pactl', 'set-sink-mute', 'voice_aec_sink', '0'])
-    print('WM8960: Headphone/Speaker 0 dB, PCM включён, физический выход восстановлен.')
+    print('WM8960: PCM включён; физический Pulse-выход 100%.')
