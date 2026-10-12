@@ -159,7 +159,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RuntimeError):
             await agent.receiver(session, player, gate)
         self.assertEqual(player.finished, 1)
-        self.assertEqual(player.audio, [])  # first answer was flushed, no echo reply played
+        self.assertEqual(player.audio, [(b'first', 24000)])  # preserve audio; no echo reply played
         self.assertFalse(gate.command_authorized)
 
     async def test_followup_requires_fresh_input_and_echo_guard_allows_addressed_barge_in(self):

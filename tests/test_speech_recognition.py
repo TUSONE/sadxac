@@ -1,0 +1,126 @@
+import asyncio
+import io
+import json
+import struct
+import unittest
+import wave
+from types import SimpleNamespace as NS
+from unittest.mock import AsyncMock, patch
+import speech_recognition as speech
+import gemini_assistant_dialog as agent
+
+
+class SegmentTests(unittest.TestCase):
+    def test_real_vad_does_not_segment_silence(self):
+        segmenter = speech.SpeechSegmenter()
+        self.assertEqual(segmenter.feed(b'\0' * speech.FRAME_BYTES * 500), [])
+        self.assertLessEqual(len(segmenter.pre), 10)
+
+    def test_chunk_boundaries_and_silence_end_preserve_pcm(self):
+        class VAD:
+            def is_speech(self, frame, rate):
+                return frame != b'\0' * speech.FRAME_BYTES
+        raw = struct.pack('<h', 1000) * (speech.FRAME_BYTES // 2) * 20 + b'\0' * speech.FRAME_BYTES * 40
+        whole = speech.SpeechSegmenter(VAD()).feed(raw)
+        segmenter = speech.SpeechSegmenter(VAD())
+        fragmented = []
+        for i in range(0, len(raw), 137):
+            fragmented.extend(segmenter.feed(raw[i:i+137]))
+        self.assertEqual(whole, fragmented)
+        self.assertEqual(len(whole), 1)
+        self.assertLess(len(whole[0]), len(raw))
+        self.assertTrue(whole[0].startswith(struct.pack('<h', 1000)))
+
+    def test_short_click_rejected_and_long_input_bounded(self):
+        class VAD:
+            def is_speech(self, frame, rate): return frame[0] != 0
+        segmenter = speech.SpeechSegmenter(VAD())
+        self.assertEqual(segmenter.feed(b'\1' * speech.FRAME_BYTES * 3 + b'\0' * speech.FRAME_BYTES * 40), [])
+        result = segmenter.feed(b'\1' * speech.FRAME_BYTES * 1000)
+        self.assertTrue(result)
+        self.assertTrue(all(len(pcm) <= speech.FRAME_BYTES * 400 for pcm in result))
+
+
+class RecognitionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_audio_request_is_wav_with_ru_en_schema_and_no_persisted_file(self):
+        generate = AsyncMock(return_value=NS(text=json.dumps({'text': 'Славик, громкость 50', 'language': 'ru'})))
+        client = NS(aio=NS(models=NS(generate_content=generate)))
+        raw = struct.pack('<h', 1000) * 16000
+        self.assertEqual(await speech.transcribe(client, raw), 'Славик, громкость 50')
+        args = generate.call_args.kwargs
+        blob = args['contents'].parts[0].inline_data
+        self.assertEqual(blob.mime_type, 'audio/wav')
+        with wave.open(io.BytesIO(blob.data), 'rb') as data:
+            self.assertEqual((data.getframerate(), data.getnchannels(), data.getnframes()), (16000, 1, 16000))
+        self.assertEqual(args['config'].response_schema['properties']['language']['enum'], ['ru', 'en', 'none'])
+        for content in ('{"text":"music", "language":"none"}', '{"text":"こんにちは", "language":"ja"}', 'invalid'):
+            generate.return_value = NS(text=content)
+            if 'none' in content:
+                self.assertEqual(await speech.transcribe(client, raw), '')
+            else:
+                with self.assertRaises(ValueError): await speech.transcribe(client, raw)
+
+    async def test_only_verified_address_starts_manual_activity(self):
+        for text, expected in [('Славик поставь паузу', 4), ('Может что-нибудь обсудим?', 0), ('', 0)]:
+            queue = asyncio.Queue()
+            queue.put_nowait(b'pcm')
+            session = NS(send_realtime_input=AsyncMock())
+            player = NS(queue=asyncio.Queue(), audio_until=0)
+            gate = agent.WakeGate(wake_enabled=True, followup_enabled=False)
+            with patch.object(speech, 'transcribe', return_value=text):
+                task = asyncio.create_task(speech.recognition_worker(None, session, queue, gate, player, agent.EchoGuard(), asyncio.Lock()))
+                await asyncio.wait_for(queue.join(), 2)
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError): await task
+            self.assertEqual(session.send_realtime_input.await_count, expected)
+            if expected:
+                self.assertTrue(gate.response_allowed)
+                calls = session.send_realtime_input.call_args_list
+                self.assertIn('activity_start', calls[0].kwargs)
+                self.assertEqual(calls[1].kwargs['audio'].data, b'pcm')
+                self.assertIn('Славик поставь паузу', calls[2].kwargs['text'])
+                self.assertIn('activity_end', calls[3].kwargs)
+                self.assertTrue(gate.asr_pending)
+
+    async def test_asr_failure_does_not_open_gate_or_fall_back_to_untrusted_live_asr(self):
+        queue = asyncio.Queue()
+        queue.put_nowait(b'pcm')
+        session = NS(send_realtime_input=AsyncMock())
+        player = NS(queue=asyncio.Queue(), audio_until=0)
+        gate = agent.WakeGate()
+        with patch.object(speech, 'transcribe', side_effect=RuntimeError('private response')):
+            task = asyncio.create_task(speech.recognition_worker(None, session, queue, gate, player, agent.EchoGuard(), asyncio.Lock()))
+            await asyncio.wait_for(queue.join(), 2)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError): await task
+        session.send_realtime_input.assert_not_awaited()
+        self.assertFalse(gate.response_allowed)
+
+    async def test_unverified_live_transcription_cannot_override_authorized_request(self):
+        from test_agent import FakePlayer, FakeSession, message
+        gate, player = agent.WakeGate(), FakePlayer()
+        gate.feed_transcript('Славик привет')
+        session = FakeSession([[message(b'reply', input_transcription=NS(text='Ja fein feine'), turn_complete=True)]])
+        with self.assertRaises(RuntimeError):
+            await agent.receiver(session, player, gate, verified_asr=True)
+        self.assertEqual(player.audio, [(b'reply', 24000)])
+
+    async def test_server_interrupt_does_not_destroy_buffered_audio(self):
+        from test_agent import FakePlayer, FakeSession, message
+        gate, player = agent.WakeGate(), FakePlayer()
+        session = FakeSession([[message(b'reply', input_transcription=NS(text='Славик привет')),
+                               message(interrupted=True), message(b'echo', turn_complete=True)]])
+        with self.assertRaises(RuntimeError):
+            await agent.receiver(session, player, gate)
+        self.assertEqual(player.flushed, 0)
+        self.assertEqual(player.audio, [(b'reply', 24000)])
+        self.assertEqual(player.finished, 1)
+
+    async def test_manual_live_config_has_no_native_asr_or_automatic_interruptions(self):
+        with patch.dict(agent.os.environ, {'SLAVIK_ASR': 'gemini'}):
+            config = agent.make_config().model_dump(exclude_none=True)
+        self.assertNotIn('input_audio_transcription', config)
+        activity = config['realtime_input_config']
+        self.assertEqual(activity['automatic_activity_detection'], {'disabled': True})
+        self.assertEqual(activity['activity_handling'], 'NO_INTERRUPTION')
+        self.assertEqual(activity['turn_coverage'], 'TURN_INCLUDES_ONLY_ACTIVITY')

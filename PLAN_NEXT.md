@@ -1,5 +1,27 @@
 # Славик: план стабилизации и передача следующей модели
 
+## Последний запрос: самоперебивание, мягкий duck, другой ASR
+
+9e09a46 закрывал петлю ответов, но receiver всё ещё безусловно flush на interrupted,
+а Live automatic activity handling прекращал генерацию от эха ДО локальной проверки.
+Теперь Live NO_INTERRUPTION, receiver не flush по серверному сигналу, queue сохраняется.
+Текущее ограничение: следующая команда после ответа, голосовое barge-in отключено.
+Duck уменьшен27->12dB. Выходы100 и Spotify Connect неизменны.
+
+Default SLAVIK_ASR=gemini: WebRTC VAD2 -> один bounded WAV в памяти -> отдельный
+Gemini generate_content(JSON RU/EN) -> имя/echo guard -> ручная Live activity с PCM
+и проверенным текстом. Raw микрофон/WS непрерывны, Live-native-ASR не используется.
+ASR-проверка API и говорящего аудио на плате обязательна (--asr-test); дополнительно
+новые API requests/latency/quota. Модель конфигурируема SLAVIK_ASR_MODEL. При ошибке
+нет тихого fallback. Старый путь SLAVIK_ASR=live доступен для сравнения.
+
+103 локальных теста, VAD source build(GCC x86_64), pip check; ARM/Python3.13 install
+и Gemini API не проверены. Старый12s sent-to-gemini.wav VAD2 и3 видят continuous
+activity8+4s — не считать это успешной сегментацией человека в музыке. Нужна проверка
+транскрипта на той же колонке и полные WAV для AEC. Не обещать идеальное распознавание.
+Обновление git pull; bash install-linux.sh (новая VAD зависимость/root duck module),
+--asr-test без музыки и с музыкой; затем обычный запуск. Mixer scripts повторно не нужны.
+
 ## Актуальное исправление после повторного аппаратного лога
 
 Предыдущая защита553ff85 не остановила петлю на громкой колонке: input задерживался

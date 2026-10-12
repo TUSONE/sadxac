@@ -131,7 +131,8 @@ class WakeTests(unittest.TestCase):
             self.assertTrue(gate.awake)
 
     def test_sdk_config(self):
-        config = a.make_config().model_dump(exclude_none=True)
+        with patch.dict(a.os.environ, {'SLAVIK_ASR': 'live'}):
+            config = a.make_config().model_dump(exclude_none=True)
         self.assertNotIn('proactivity', config)
         self.assertEqual(config['input_audio_transcription']['language_codes'], ['ru-RU', 'en-US'])
         self.assertEqual(config['response_modalities'], ['AUDIO'])
@@ -233,11 +234,11 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(player.finished, 1)
         self.assertEqual(session.calls, 4)
 
-    async def test_interrupted_flush_always_and_same_event_transcript(self):
+    async def test_server_interrupt_does_not_flush_and_same_event_address_is_accepted(self):
         gate = a.WakeGate(wake_enabled=True, followup_enabled=True); player = FakePlayer()
         session = FakeSession([[message(b'stale', interrupted=True, input_transcription=NS(text='Славик')), message(b'new', turn_complete=True)]])
         with self.assertRaises(RuntimeError): await a.receiver(session, player, gate)
-        self.assertEqual(player.flushed, 1)
+        self.assertEqual(player.flushed, 0)
         self.assertTrue(gate.awake)
         self.assertEqual(player.audio, [(b'new', 24000)])
 
@@ -303,7 +304,8 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(gate.response_allowed)
 
     async def test_language_hint_rejection_retries_only_initial_setup(self):
-        config = a.make_config()
+        with patch.dict(a.os.environ, {'SLAVIK_ASR': 'live'}):
+            config = a.make_config()
         calls = []
         class Context:
             async def __aenter__(self):

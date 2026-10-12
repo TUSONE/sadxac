@@ -55,11 +55,18 @@ SYSTEM_PROMPT = os.getenv(
     """Ты голосовой собеседник по имени Славик. Веди естественный непрерывный
 живой разговор: слушай пользователя, отвечай и поддерживай контекст беседы.
 Правило обращения и ожидания команд задано ниже. Не объявляй режим вопрос-ответ.
-Пользователь может прервать твой ответ обращением по имени: уступи ему слово.
+Договаривай начатую фразу. При обработке следующей просьбы опирайся на проверенную транскрипцию.
 Не воспринимай собственный голос из динамика как новую реплику пользователя.
 Не комментируй техническую работу микрофона, AEC, VAD или аудиопотока.
 Отвечай естественно и кратко, если пользователь не попросил подробностей.""",
 )
+
+
+def independent_asr():
+    mode = os.getenv('SLAVIK_ASR', 'gemini')
+    if mode not in ('gemini', 'live'):
+        raise RuntimeError('SLAVIK_ASR должен быть gemini или live.')
+    return mode == 'gemini'
 
 
 def audio_wake_enabled():
@@ -89,7 +96,7 @@ def system_instruction():
         "Непрерывный диалог включён. Отвечай на обращённую к тебе речь сразу, "
         "без слова пробуждения и без ограничения окна разговора."
     )
-    if WAKE_ENABLED and not FOLLOWUP_ENABLED:
+    if WAKE_ENABLED and (not FOLLOWUP_ENABLED or independent_asr()):
         mode = ("Режим строгих обращений: каждая новая просьба должна содержать имя "
                 "Славик, Славка, Слава, Славуха, Славчуха или близкий вариант. "
                 "После ответа молчи до нового обращения. Имя может быть в любой части фразы. "
@@ -101,7 +108,7 @@ def system_instruction():
 Не вызывай wake_assistant для музыки, текста песни, своего голоса, посторонней речи
 или просто потому, что понял команду без обращения. При сомнении оставайся молчаливым.
 Не опирайся на написание имени в транскрипции, если само аудио понятно."""
-    return SYSTEM_PROMPT + "\n" + language + "\n" + mode + ("\n" + audio_wake if audio_wake_enabled() else "")
+    return SYSTEM_PROMPT + "\n" + language + "\n" + mode + ("\n" + audio_wake if audio_wake_enabled() and not independent_asr() else "")
 
 
 def require_api_key() -> str:
@@ -248,6 +255,7 @@ class WakeGate:
         self.wake_enabled = wake_enabled
         self.followup_enabled = followup_enabled
         self.input_authorized = False
+        self.asr_pending = False
         if AWAKE_SECONDS <= 0:
             raise ValueError("SLAVIK_AWAKE_SECONDS must be positive")
         self.awake_until = 0.0
@@ -573,9 +581,9 @@ async def microphone_sender(session, capture: PulseCapture):
         )
 
 
-async def receiver(session, player, gate, tool_queue=None):
+async def receiver(session, player, gate, tool_queue=None, verified_asr=False, echo_guard=None):
     audible_turn = None
-    echo = EchoGuard()
+    echo = echo_guard or EchoGuard()
     input_rejected = False
     while True:
         received = False
@@ -584,16 +592,19 @@ async def receiver(session, player, gate, tool_queue=None):
             sc = response.server_content
             interrupted = bool(sc and getattr(sc, "interrupted", False))
             if interrupted:
-                event_log("interrupted", queued_blocks=player.queue.qsize() if hasattr(player, "queue") else "unknown", audible=audible_turn, awake=gate.awake)
-                echo.protect_playback(player)
-                await player.flush()
+                # NO_INTERRUPTION is requested in setup. A stray server signal
+                # must never kill pacat or clear the already-buffered reply.
+                event_log("server_interrupt_ignored", queued_blocks=player.queue.qsize() if hasattr(player, "queue") else "unknown")
+                if audible_turn:
+                    await player.finish_turn()
+                audible_turn = False
+            if interrupted and not verified_asr:
+                # New output after an interrupt needs a fresh addressed input.
                 gate.command_authorized = False
-                audible_turn = None
-                gate.clear_turn_text()
-                print("\n[Перебивание: звук очищен]", flush=True)
+                gate.input_authorized = False
             if sc:
                 inp = getattr(sc, "input_transcription", None)
-                if inp and getattr(inp, "text", None):
+                if inp and getattr(inp, "text", None) and not verified_asr:
                     accepted = echo.accept(inp.text, player) if gate.wake_enabled else inp.text
                     if accepted is None:
                         input_rejected = True
@@ -606,6 +617,8 @@ async def receiver(session, player, gate, tool_queue=None):
                         print(f"\nТы: {accepted}", flush=True)
                         if gate.feed_transcript(accepted):
                             print("[Славик активирован]", flush=True)
+                        if interrupted and gate.response_allowed:
+                            audible_turn = None
                     if getattr(inp, "finished", False):
                         gate.clear_turn_text()
                         gate.input_authorized = False
@@ -661,6 +674,7 @@ async def receiver(session, player, gate, tool_queue=None):
                     await player.finish_turn()
                 audible_turn = None
                 gate.complete_turn()
+                gate.asr_pending = False
         if not received:
             raise RuntimeError("Live receive stream ended without a turn")
 
@@ -754,21 +768,32 @@ async def run():
     await prepare_output()
     capture = PulseCapture()
     player = PulsePlayer()
-    gate = WakeGate()
+    use_asr = independent_asr()
+    gate = WakeGate(followup_enabled=FOLLOWUP_ENABLED and not use_asr)
+    echo = EchoGuard()
     client = genai.Client(api_key=api_key)
     try:
         await capture.start()
         await player.start()
         async with connect_live(client, config) as session:
             print(f"[Gemini Live подключен] Model={MODEL}", flush=True)
-            print((f"Режим: обращения, окно {AWAKE_SECONDS:g}s" if FOLLOWUP_ENABLED else
+            print((f"Режим: обращения, окно {AWAKE_SECONDS:g}s" if gate.followup_enabled else
                    "Режим: строгое обращение для каждой новой просьбы") if WAKE_ENABLED else
                   "Режим: непрерывный диалог, без слова пробуждения", flush=True)
+            print("[ASR] Отдельный Gemini + WebRTC VAD, RU/EN; команда после окончания ответа." if use_asr else
+                  "[ASR] Встроенное распознавание Live.", flush=True)
             print("[Громкость] Голос: 40%; обычные команды громкости управляют музыкой.", flush=True)
             print(f"Mic={MIC_SOURCE}: 16k stereo -> channel {capture.channel} mono; Out={SPEAKER_SINK}: 24k mono -> 48k stereo", flush=True)
             async with asyncio.TaskGroup() as tg:
-                tg.create_task(microphone_sender(session, capture))
-                tg.create_task(receiver(session, player, gate, tool_queue))
+                if use_asr:
+                    from speech_recognition import microphone_pipeline, recognition_worker
+                    asr_queue = asyncio.Queue(maxsize=1)
+                    send_lock = asyncio.Lock()
+                    tg.create_task(microphone_pipeline(session, capture, player, gate, asr_queue, send_lock))
+                    tg.create_task(recognition_worker(client, session, asr_queue, gate, player, echo, send_lock))
+                else:
+                    tg.create_task(microphone_sender(session, capture))
+                tg.create_task(receiver(session, player, gate, tool_queue, use_asr, echo))
                 tg.create_task(tool_worker(session, tool_queue, spotify, player, gate))
                 tg.create_task(player.run())
                 tg.create_task(conversation_focus(gate, player, capture))
@@ -833,7 +858,7 @@ async def connect_live(client, config):
             session = await stack.enter_async_context(client.aio.live.connect(model=MODEL, config=config))
         except Exception as error:
             reason = str(error).lower()
-            if not (config.input_audio_transcription.language_codes and
+            if not (getattr(config.input_audio_transcription, "language_codes", None) and
                     'unknown name' in reason and
                     ('language_codes' in reason or 'languagecodes' in reason)):
                 raise
@@ -849,7 +874,8 @@ def assistant_instruction(enable_spotify):
 Ты домашний голосовой помощник. Отвечай на общие вопросы, объясняй, переводи,
 считай, помогай с повседневными задачами. Не своди все разговоры к музыке. Отвечай на реплику и заканчивай.
 Не предлагай музыку/новости и не задавай вопросы только ради продолжения беседы.
-Во время твоего ответа новая реплика должна содержать обращение по имени.
+Проверенная транскрипция текущей реплики имеет приоритет над черновой аудиотранскрипцией.
+Не отвечай на речь вне разрешённой активности.
 Не воспринимай повтор твоей последней фразы как новую просьбу.
 Для текущей погоды вызывай weather: город из разговора, либо город по умолчанию;
 если инструмент просит уточнить город, спроси его. Для свежих фактов, новостей
@@ -890,26 +916,26 @@ def make_config(enable_spotify=False):
     return types.LiveConnectConfig(
         response_modalities=[types.Modality.AUDIO],
         system_instruction=assistant_instruction(enable_spotify),
-        tools=[types.Tool(function_declarations=[d for d in AUDIO_DECLARATIONS if d["name"] != "wake_assistant" or audio_wake_enabled()] + KNOWLEDGE_DECLARATIONS + (SPOTIFY_DECLARATIONS if enable_spotify else []))],
+        tools=[types.Tool(function_declarations=[d for d in AUDIO_DECLARATIONS if d["name"] != "wake_assistant" or (audio_wake_enabled() and not independent_asr())] + KNOWLEDGE_DECLARATIONS + (SPOTIFY_DECLARATIONS if enable_spotify else []))],
         speech_config=types.SpeechConfig(
             voice_config=types.VoiceConfig(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=VOICE)
             )
         ),
-        input_audio_transcription=types.AudioTranscriptionConfig(
+        input_audio_transcription=None if independent_asr() else types.AudioTranscriptionConfig(
             language_codes=["ru-RU", "en-US"]
             if os.getenv("GEMINI_LANGUAGE_HINTS", "1") == "1" else None
         ),
         output_audio_transcription=types.AudioTranscriptionConfig(),
         realtime_input_config=types.RealtimeInputConfig(
-            automatic_activity_detection=types.AutomaticActivityDetection(
+            automatic_activity_detection=(types.AutomaticActivityDetection(disabled=True) if independent_asr() else types.AutomaticActivityDetection(
                 disabled=False,
                 start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_LOW,
                 end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_LOW,
                 prefix_padding_ms=500,
                 silence_duration_ms=700,
-            ),
-            activity_handling=types.ActivityHandling.START_OF_ACTIVITY_INTERRUPTS,
+            )),
+            activity_handling=types.ActivityHandling.NO_INTERRUPTION,
             turn_coverage=types.TurnCoverage.TURN_INCLUDES_ONLY_ACTIVITY,
         ),
     )
@@ -1046,7 +1072,28 @@ async def entry(args):
     loop = asyncio.get_running_loop()
     loop.add_signal_handler(signal.SIGTERM, task.cancel)
     try:
-        if args.weather is not None:
+        if args.asr_test:
+            from google import genai
+            from speech_recognition import SpeechSegmenter, transcribe
+            capture = PulseCapture()
+            client = genai.Client(api_key=require_api_key())
+            try:
+                segmenter = SpeechSegmenter()
+                await capture.start()
+                print('[ASR-тест] Скажите одну фразу и замолчите. Максимум ожидания20s; аудио не сохраняется.', flush=True)
+                deadline = time.monotonic() + 20
+                while time.monotonic() < deadline:
+                    segments = segmenter.feed(await asyncio.wait_for(capture.read_mono(), 3))
+                    if segments:
+                        text = await transcribe(client, segments[0])
+                        print('[ASR-тест] ' + (text or 'Понятная RU/EN речь не найдена.'), flush=True)
+                        break
+                else:
+                    print('[ASR-тест] Детектор не выделил фразу. Проверьте уровень микрофона.', flush=True)
+            finally:
+                await capture.close()
+                await client.aio.aclose()
+        elif args.weather is not None:
             import json
             print(json.dumps(await asyncio.to_thread(weather, {'city': args.weather}), ensure_ascii=False, indent=2))
         elif args.diagnose:
@@ -1087,6 +1134,7 @@ async def entry(args):
 def main():
     parser = argparse.ArgumentParser()
     modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--asr-test", action="store_true")
     modes.add_argument("--weather", nargs="?", const="", metavar="CITY")
     modes.add_argument("--diagnose", action="store_true")
     modes.add_argument("--audio-test", action="store_true")
