@@ -21,7 +21,7 @@ def get_json(base, params):
 
 
 def weather(args):
-    city = args.get('city') or os.getenv('SLAVIK_CITY', '')
+    city = args.get('city') or os.getenv('SLAVIK_CITY', 'Ташкент')
     if not isinstance(city, str) or not city.strip():
         return {'status': 'needs_input', 'question': 'В каком городе посмотреть погоду?'}
     if len(city) > 150:

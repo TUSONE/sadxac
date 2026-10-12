@@ -22,7 +22,7 @@ class OutcomeTests(unittest.TestCase):
         self.assertEqual(tools.tool_outcome('Не выполнено: Spotify HTTP 403')['status'], 'failed')
 
     def test_weather_needs_city_and_returns_timed_data(self):
-        with patch.dict(os.environ, {}, clear=True), patch.object(tools, 'get_json') as fetch:
+        with patch.dict(os.environ, {'SLAVIK_CITY': ''}, clear=True), patch.object(tools, 'get_json') as fetch:
             self.assertEqual(tools.weather({})['status'], 'needs_input')
             fetch.assert_not_called()
         with patch.object(tools, 'get_json', side_effect=[{'results': [{'name': 'Ташкент', 'latitude': 41, 'longitude': 69}]},
@@ -34,6 +34,12 @@ class OutcomeTests(unittest.TestCase):
         self.assertIsNone(result['current'])
         with patch.object(tools, 'get_json', side_effect=TimeoutError):
             self.assertEqual(tools.weather({'city': 'Ташкент'})['status'], 'failed')
+
+    def test_tashkent_default_and_explicit_city_override(self):
+        for args, expected in [({}, 'Ташкент'), ({'city': 'Москва'}, 'Москва')]:
+            with patch.dict(os.environ, {}, clear=True), patch.object(tools, 'get_json', return_value={'results': []}) as fetch:
+                tools.weather(args)
+            self.assertEqual(fetch.call_args.args[1]['name'], expected)
 
     def test_curated_queue_validates_both_artist_and_title_and_deduplicates(self):
         results = {'tracks': {'items': [
