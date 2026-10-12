@@ -53,7 +53,7 @@ SYSTEM_PROMPT = os.getenv(
     """Ты голосовой собеседник по имени Славик. Веди естественный непрерывный
 живой разговор: слушай пользователя, отвечай и поддерживай контекст беседы.
 Правило обращения и ожидания команд задано ниже. Не объявляй режим вопрос-ответ.
-Пользователь может говорить поверх твоего ответа: немедленно уступи ему слово.
+Пользователь может прервать твой ответ обращением по имени: уступи ему слово.
 Не воспринимай собственный голос из динамика как новую реплику пользователя.
 Не комментируй техническую работу микрофона, AEC, VAD или аудиопотока.
 Отвечай естественно и кратко, если пользователь не попросил подробностей.""",
@@ -255,7 +255,8 @@ class WakeGate:
 
     @property
     def response_allowed(self):
-        return self.awake or self.command_authorized
+        # A listening window alone must not authorize a model-initiated reply.
+        return not self.wake_enabled or self.command_authorized
 
     def complete_turn(self):
         self.duck_pending_until = 0.0
@@ -298,6 +299,65 @@ class WakeGate:
 
     def clear_turn_text(self):
         self.input_buf = ""
+
+
+class EchoGuard:
+    """Reject our recent words and require address during playback/echo tail.
+
+    This is a conversational guard, not acoustic echo cancellation. The mic
+    keeps streaming and an addressed user can still interrupt.
+    """
+    def __init__(self):
+        self.output = ""
+        self.output_at = 0.0
+        self.tail_until = 0.0
+        self.candidate = ""
+        self.candidate_at = 0.0
+
+    def playing(self, player):
+        queue = getattr(player, 'queue', None)
+        return bool(queue is not None and not queue.empty()) or time.monotonic() < getattr(player, 'audio_until', 0) + .12
+
+    def protect_playback(self, player):
+        if self.playing(player):
+            # A server interrupt may flush audio before transcription arrives.
+            self.tail_until = time.monotonic() + 1.2
+
+    def remember(self, text):
+        now = time.monotonic()
+        if now - self.output_at > 20:
+            self.output = ""
+        self.output = (self.output + " " + text)[-1500:]
+        self.output_at = now
+
+    def accept(self, text, player):
+        now = time.monotonic()
+        self.protect_playback(player)
+        norm = normalize_text(text)
+        recent = now - self.output_at < 20
+        protected = (self.playing(player) or now < self.tail_until or
+                     now < getattr(player, 'audio_until', 0) + 1.2 or
+                     now < self.output_at + 1.2)
+        echo = (protected and recent and len(norm) >= 6 and
+                (len(norm.split()) >= 2 or contains_wake(norm)) and
+                norm in normalize_text(self.output))
+        if echo:
+            self.candidate = ""
+            return None
+        if protected:
+            if now - self.candidate_at > 2:
+                self.candidate = ""
+            self.candidate = (self.candidate + text)[-500:]
+            self.candidate_at = now
+            if not contains_wake(self.candidate):
+                return None
+            # A complete addressed phrase supersedes earlier non-addressed
+            # fragments; keep fragments only for a split name / name at end.
+            accepted = text if contains_wake(text) and len(norm.split()) >= 2 else self.candidate
+            self.candidate = ""
+            return accepted
+        self.candidate = ""
+        return text
 
 
 class PulseCapture:
@@ -496,6 +556,8 @@ async def microphone_sender(session, capture: PulseCapture):
 
 async def receiver(session, player, gate, tool_queue=None):
     audible_turn = None
+    echo = EchoGuard()
+    input_rejected = False
     while True:
         received = False
         async for response in session.receive():
@@ -504,16 +566,27 @@ async def receiver(session, player, gate, tool_queue=None):
             interrupted = bool(sc and getattr(sc, "interrupted", False))
             if interrupted:
                 event_log("interrupted", queued_blocks=player.queue.qsize() if hasattr(player, "queue") else "unknown", audible=audible_turn, awake=gate.awake)
+                echo.protect_playback(player)
                 await player.flush()
+                gate.command_authorized = False
                 audible_turn = None
                 gate.clear_turn_text()
                 print("\n[Перебивание: звук очищен]", flush=True)
             if sc:
                 inp = getattr(sc, "input_transcription", None)
                 if inp and getattr(inp, "text", None):
-                    print(f"\nТы: {inp.text}", flush=True)
-                    if gate.feed_transcript(inp.text):
-                        print("[Славик активирован]", flush=True)
+                    accepted = echo.accept(inp.text, player) if gate.wake_enabled else inp.text
+                    if accepted is None:
+                        input_rejected = True
+                        gate.command_authorized = False
+                        gate.clear_turn_text()
+                        event_log("echo_or_unaddressed_playback", text=inp.text)
+                        print(f"[Фон/эхо пропущено] {inp.text}", flush=True)
+                    else:
+                        input_rejected = False
+                        print(f"\nТы: {accepted}", flush=True)
+                        if gate.feed_transcript(accepted):
+                            print("[Славик активирован]", flush=True)
                     if getattr(inp, "finished", False):
                         gate.clear_turn_text()
             if tool_queue is not None and getattr(response, "tool_call", None):
@@ -522,7 +595,9 @@ async def receiver(session, player, gate, tool_queue=None):
                 # same packet, independent of their order. A music call alone
                 # never bypasses the sleeping gate.
                 for call in calls:
-                    if audio_wake_enabled() and call.name == "wake_assistant" and (call.args or {}).get("addressed") is True:
+                    if (audio_wake_enabled() and not input_rejected and not echo.playing(player) and
+                            time.monotonic() >= echo.tail_until and call.name == "wake_assistant" and
+                            (call.args or {}).get("addressed") is True):
                         gate.addressed = True
                         gate.duck_pending_until = time.monotonic() + 30
                         gate.music_finish_pending = gate.close_when_drained = False
@@ -557,6 +632,7 @@ async def receiver(session, player, gate, tool_queue=None):
                         for chunk, rate in chunks:
                             await player.put(chunk, rate)
                         if out and getattr(out, "text", None):
+                            echo.remember(out.text)
                             print(f"\nСлавик: {out.text}", flush=True)
             if sc and getattr(sc, "turn_complete", False):
                 if audible_turn:
@@ -608,6 +684,10 @@ async def tool_worker(session, queue, spotify, player=None, gate=None):
                     result.startswith("Spotify принял")):
                 gate.music_finish_pending = True
             event_log("tool_result", tool=call.name, id=call.id, result=result)
+            # The result belongs to the already-authorized request, even if
+            # its listening deadline expired while the network call ran.
+            if gate is not None and authorized:
+                gate.command_authorized = True
             outcome = tool_outcome(result, action)
             if call.id:
                 completed[call.id] = outcome
@@ -744,7 +824,10 @@ async def connect_live(client, config):
 def assistant_instruction(enable_spotify):
     capabilities = """
 Ты домашний голосовой помощник. Отвечай на общие вопросы, объясняй, переводи,
-считай, помогай с повседневными задачами. Не своди все разговоры к музыке.
+считай, помогай с повседневными задачами. Не своди все разговоры к музыке. Отвечай на реплику и заканчивай.
+Не предлагай музыку/новости и не задавай вопросы только ради продолжения беседы.
+Во время твоего ответа новая реплика должна содержать обращение по имени.
+Не воспринимай повтор твоей последней фразы как новую просьбу.
 Для текущей погоды вызывай weather: город из разговора, либо город по умолчанию;
 если инструмент просит уточнить город, спроси его. Для свежих фактов, новостей
 и поиска в интернете вызывай web_search. Не выдумывай погоду или текущие события.

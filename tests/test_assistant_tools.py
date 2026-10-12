@@ -143,3 +143,53 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
             capture = agent.PulseCapture()
         capture.read_stereo = AsyncMock(return_value=struct.pack('<hhhh', 11, 22, 33, 44))
         self.assertEqual(struct.unpack('<hh', await capture.read_mono()), (11, 33))
+
+    async def test_echo_and_unrelated_foreign_transcript_cannot_start_self_dialogue(self):
+        from test_agent import FakePlayer, FakeSession, message
+        gate = agent.WakeGate(wake_enabled=True)
+        player = FakePlayer()
+        session = FakeSession([
+            [message(b'first', input_transcription=NS(text='Славик привет'),
+                     output_transcription=NS(text='Может что-нибудь обсудим?'), turn_complete=True)],
+            [message(input_transcription=NS(text='Может что-нибудь'), interrupted=True),
+             message(b'echo_reply', output_transcription=NS(text='Давай поговорим!'), turn_complete=True)],
+            [message(input_transcription=NS(text='Will I switch it?')),
+             message(b'foreign_reply', turn_complete=True)],
+        ])
+        with self.assertRaises(RuntimeError):
+            await agent.receiver(session, player, gate)
+        self.assertEqual(player.finished, 1)
+        self.assertEqual(player.audio, [])  # first answer was flushed, no echo reply played
+        self.assertFalse(gate.command_authorized)
+
+    async def test_followup_requires_fresh_input_and_echo_guard_allows_addressed_barge_in(self):
+        guard = agent.EchoGuard()
+        player = NS(queue=asyncio.Queue(), audio_until=150)
+        with patch.object(agent.time, 'monotonic', return_value=100):
+            guard.remember('Может что-нибудь обсудим?')
+            self.assertIsNone(guard.accept('Может что-нибудь', player))
+            self.assertIsNone(guard.accept('Will I switch it?', player))
+            self.assertEqual(guard.accept('Славка, поставь паузу', player), 'Славка, поставь паузу')
+            gate = agent.WakeGate(wake_enabled=True)
+            gate.feed_transcript('Славик привет')
+            gate.complete_turn()
+            self.assertTrue(gate.awake)
+            self.assertFalse(gate.response_allowed)
+        player.audio_until = 0
+        with patch.object(agent.time, 'monotonic', return_value=103):
+            self.assertEqual(guard.accept('Как дела?', player), 'Как дела?')
+            gate.feed_transcript('Как дела?')
+            self.assertTrue(gate.response_allowed)
+
+    async def test_experimental_audio_wake_cannot_bypass_rejected_echo(self):
+        from test_agent import FakePlayer, FakeSession, message
+        gate, player, queue = agent.WakeGate(wake_enabled=True), FakePlayer(), asyncio.Queue()
+        echoed = message(input_transcription=NS(text='Может что-нибудь'))
+        echoed.tool_call = NS(function_calls=[NS(name='wake_assistant', id='wake', args={'addressed': True}),
+                                              NS(name='spotify_command', id='skip', args={'action': 'next'})])
+        session = FakeSession([[message(b'reply', input_transcription=NS(text='Славик привет'),
+                                        output_transcription=NS(text='Может что-нибудь обсудим?'), turn_complete=True)], [echoed]])
+        with patch.dict(os.environ, {'SLAVIK_AUDIO_WAKE': '1'}), self.assertRaises(RuntimeError):
+            await agent.receiver(session, player, gate, queue)
+        self.assertFalse(queue.get_nowait()[1])
+        self.assertFalse(queue.get_nowait()[1])

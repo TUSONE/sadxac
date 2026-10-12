@@ -229,8 +229,8 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             [message(b'followup'), message(turn_complete=True)]])
         with self.assertRaisesRegex(RuntimeError, 'ended'):
             await a.receiver(session, player, gate)
-        self.assertEqual(player.audio, [(b'wake', 24000), (b'followup', 24000)])
-        self.assertEqual(player.finished, 2)
+        self.assertEqual(player.audio, [(b'wake', 24000)])
+        self.assertEqual(player.finished, 1)
         self.assertEqual(session.calls, 4)
 
     async def test_interrupted_flush_always_and_same_event_transcript(self):
@@ -248,14 +248,14 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(player.audio, [])
 
     async def test_fallback_pcm(self):
-        gate = a.WakeGate(wake_enabled=True); gate.extend(); player = FakePlayer()
+        gate = a.WakeGate(wake_enabled=True); gate.feed_transcript('Славик'); player = FakePlayer()
         part = NS(inline_data=NS(data=b'pcm', mime_type='audio/pcm;rate=48000'))
         session = FakeSession([[message(model_turn=NS(parts=[part]), turn_complete=True)]])
         with self.assertRaises(RuntimeError): await a.receiver(session, player, gate)
         self.assertEqual(player.audio, [(b'pcm', 48000)])
 
     async def test_authorized_reply_survives_wake_timeout(self):
-        gate = a.WakeGate(wake_enabled=True); gate.extend(); player = FakePlayer()
+        gate = a.WakeGate(wake_enabled=True); gate.feed_transcript('Славик'); player = FakePlayer()
         class Session:
             calls = 0
             async def receive(self):
