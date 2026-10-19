@@ -72,7 +72,16 @@ def independent_asr():
 
 
 def audio_wake_enabled():
-    return os.getenv("SLAVIK_AUDIO_WAKE", "1") == "1"
+    # Raw loudspeaker feedback is speech to Gemini too. Do not allow an
+    # unverifiable audio-only claim to bypass the textual wake gate there.
+    default = "0" if MIC_SOURCE == PHYSICAL_MIC_SOURCE else "1"
+    return os.getenv("SLAVIK_AUDIO_WAKE", default) == "1"
+
+
+def unaddressed_barge_in_enabled():
+    # Until acoustic echo is reliable on the board, require a name during output.
+    # The three-second follow-up after output is independent of this switch.
+    return MIC_SOURCE != PHYSICAL_MIC_SOURCE and os.getenv("SLAVIK_UNADDRESSED_BARGE_IN", "0") == "1"
 
 
 def system_instruction():
@@ -109,6 +118,10 @@ def system_instruction():
                 "После ответа молчи до нового обращения. Имя может быть в любой части фразы. "
                 "Не считай свой голос, повтор ответа или фоновую речь обращением. "
                 "Не предлагай новые темы и не продолжай беседу сам.")
+    if WAKE_ENABLED and not unaddressed_barge_in_enabled():
+        mode += (" Во время твоего звучащего ответа новая просьба должна содержать имя. "
+                 "После окончания звука можно продолжить без имени в указанном окне. "
+                 "Это уточнение имеет приоритет над правилом перебивания без имени.")
     audio_wake = """Определяй обращение по самому входному аудио: текст транскрипции может ошибаться.
 Когда в аудио пользователь явно обращается к тебе по имени, сначала вызови wake_assistant
 с addressed=true и command_present=true, если есть просьба, либо false, если только имя.
@@ -477,6 +490,7 @@ class EchoGuard:
 class PulseCapture:
     def __init__(self, processed=True, source=None):
         self.proc = None
+        self.processing_task = None
         self.source = source or MIC_SOURCE
         self.processor = load_processor(self.source) if processed else None
         self.channel = self.processor.channel if self.processor else INPUT_SELECTED_CHANNEL
@@ -503,10 +517,25 @@ class PulseCapture:
 
     async def read_mono(self) -> bytes:
         mono = stereo_to_mono_channel(await self.read_stereo(), self.channel)
-        return self.processor.process(mono) if self.processor else mono
+        if not self.processor:
+            return mono
+        if getattr(getattr(self.processor, 'enhancer', None), 'threaded', False):
+            # Only one stateful DSP call can be in flight. ctypes releases the
+            # GIL in native RNNoise; keep its C work off the websocket/player loop.
+            self.processing_task = asyncio.create_task(asyncio.to_thread(self.processor.process, mono))
+            try:
+                return await asyncio.shield(self.processing_task)
+            finally:
+                if self.processing_task.done():
+                    self.processing_task = None
+        return self.processor.process(mono)
 
     async def close(self):
         await stop_process(self.proc)
+        if self.processing_task:
+            # Cancellation cannot free a native state still used by its worker.
+            await asyncio.gather(self.processing_task, return_exceptions=True)
+            self.processing_task = None
         enhancer = getattr(self.processor, 'enhancer', None)
         if enhancer:
             enhancer.close()
@@ -745,7 +774,7 @@ async def receiver(session, player, gate, tool_queue=None, verified_asr=False, e
                 if inp and getattr(inp, "text", None) and not verified_asr:
                     accepted = echo.accept(inp.text, player,
                         allow_short_answer=gate.awaiting_answer and gate.awake,
-                        allow_barge_in=gate.followup_enabled and gate.addressed and gate.awake and MIC_SOURCE != PHYSICAL_MIC_SOURCE) if gate.wake_enabled else inp.text
+                        allow_barge_in=gate.followup_enabled and gate.addressed and gate.awake and unaddressed_barge_in_enabled()) if gate.wake_enabled else inp.text
                     if accepted is None:
                         input_rejected = True
                         gate.command_authorized = False
@@ -976,7 +1005,9 @@ async def run():
             print("[Громкость] Голос: 40%; обычные команды громкости управляют музыкой.", flush=True)
             print(f"Mic={MIC_SOURCE}: 16k stereo -> channel {capture.channel} mono; Out={SPEAKER_SINK}: 24k mono -> 48k stereo", flush=True)
             if MIC_SOURCE == PHYSICAL_MIC_SOURCE:
-                print(f'[Mic] Прямой WM8960, AEC на входе обойдён. Во время озвучки перебивание по имени; окно продолжения {AWAKE_SECONDS:g}s.', flush=True)
+                print(f'[Mic] Прямой WM8960, AEC на входе обойдён; audio-only wake={audio_wake_enabled()}. Для громкой колонки рекомендуется --mic-source aec.', flush=True)
+            if WAKE_ENABLED and not unaddressed_barge_in_enabled():
+                print(f'[Защита эха] Во время ответа перебивание по имени; после звука окно продолжения {AWAKE_SECONDS:g}s без имени.', flush=True)
             async with asyncio.TaskGroup() as tg:
                 if use_asr:
                     from speech_recognition import microphone_pipeline, recognition_worker
@@ -1366,6 +1397,7 @@ def main():
                         help='live: прямой Flash Live; gemini: отдельный экспериментальный ASR')
     parser.add_argument('--mic-enhancement', choices=('off', 'speex', 'rnnoise'),
                         help='Опытный шумодав: speex или нейросетевой rnnoise; off для чистого сравнения')
+    parser.add_argument('--audio-wake', choices=('on', 'off'), help='Пробуждение по оценке модели без имени в тексте; off против ложных активаций')
     parser.add_argument('--mic-source', choices=('aec', 'physical'), help='Источник: AEC либо прямой WM8960 без AEC на входе')
     parser.add_argument('--mic-channel', choices=('left', 'right'), help='Явно выбрать один из двух микрофонов')
     parser.add_argument('--mic-gain', type=float, help='Явный программный gain0.25..4 вместо старой калибровки')
@@ -1384,6 +1416,8 @@ def main():
     modes.add_argument("--spotify-previous", action="store_true")
     modes.add_argument("--spotify-playlist-track", type=int, metavar="NUMBER")
     args = parser.parse_args()
+    if args.audio_wake is not None:
+        os.environ['SLAVIK_AUDIO_WAKE'] = '1' if args.audio_wake == 'on' else '0'
     if args.mic_source:
         MIC_SOURCE = PHYSICAL_MIC_SOURCE if args.mic_source == 'physical' else 'voice_aec_source'
         os.environ['GEMINI_MIC_SOURCE'] = MIC_SOURCE

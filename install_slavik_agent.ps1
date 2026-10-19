@@ -10,7 +10,7 @@ $Files = @('tests/test_dialog_updates.py', 'speech_recognition.py', 'tests/test_
 $Files += @('config/voice-quantum.conf', 'music-levels.sh', 'repair-aec.sh', 'audio-buffer.sh', 'trace-audio.sh', 'music_duck.py', 'tests/test_duck.py', 'tune-audio.sh', 'aec_measurement.py', 'tests/test_aec.py', 'install-connect-fix.sh', 'patches/librespot-empty-skip-target.patch', 'vendor/librespot-armhf/librespot.gz', 'vendor/librespot-armhf/LICENSES.tar.gz', 'vendor/librespot-armhf/SHA256SUMS', 'vendor/librespot-armhf/LICENSE.librespot', 'vendor/librespot-armhf/README.md', 'vendor/librespot-armhf/Cargo.lock', 'vendor/librespot-armhf/Dockerfile', 'vendor/librespot-armhf/build.sh', 'vendor/librespot-armhf/BUILD.json')
 $Stage = Join-Path ([IO.Path]::GetTempPath()) ('slavik-' + [guid]::NewGuid().ToString('N'))
 $Files += $LoreFiles
-$Files += @('rnnoise_processing.py', 'build-rnnoise.py', 'tests/test_rnnoise.py')
+$Files += @('rnnoise_processing.py', 'build-rnnoise.py', 'tests/test_rnnoise.py', 'tests/test_realtime_capture.py')
 $RemoteStage = '.slavik-upload-' + [guid]::NewGuid().ToString('N')
 New-Item -ItemType Directory -Path $Stage | Out-Null
 try {

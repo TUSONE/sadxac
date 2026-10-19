@@ -1,3 +1,15 @@
+2026-10-20: realtime capture scheduling and playback feedback regression
+184 unittest tests passed with actual native RNNoise/SpeexDSP libraries, 0 skipped.
+Added regression tests: slow DSP leaves asyncio responsive; cancelled capture waits
+for native worker before destroying state; raw-mode false audio-only wake on "dos"
+cannot authorize a reply; default AEC rejects unaddressed mistranscribed playback;
+named barge-in and nameless post-playback follow-up retained; audio-wake CLI beats env.
+Previous unaddressed-barge test retained under explicit experimental opt-in.
+Worker does NOT reduce DSP CPU or prove real-time on ARM. No automatic queue/loss
+claims: slow processing may still lag upstream capture. Recommend AEC/off for now.
+User supplied actual raw+RNNoise run and one-core100% screenshot, not DSP timings.
+No board/API access: actual echo suppression, CPU/latency fix and hearing await test.
+
 2026-10-20: experimental direct WM8960 input and RNNoise classic
 178 unittest tests passed with actual native RNNoise and SpeexDSP libraries (0 skipped).
 RNNoise official xiph/rnnoise v0.1 resolves to cdf196b1e9de2f8ff1003328ebf9a4316477429d;

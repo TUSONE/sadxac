@@ -57,6 +57,7 @@ class SpeechGain:
 
 class RNNoiseEnhancer:
     """10ms processing frames; classic-v0.1 ABI with bundled model, no downloads."""
+    threaded = True  # PulseCapture runs native work outside the asyncio loop.
     frame_bytes = 320  # 160 samples at16k -> 480 native samples at48k
 
     def __init__(self, library_path=None, speex_path=None):

@@ -1,5 +1,30 @@
 # Славик: план стабилизации и передача следующей модели
 
+## Последний запрос: лаги physical+RNNoise и ложное audio-wake после собственной речи
+
+Подтверждён запускphysical+rnnoise+gain2. Screenshot: Python26.1% всех4ядер,
+одно ядро100%,44%total, RAM181/484MiB. Не объявлять это доказанным RNNoise deadline
+miss безDSP_avg/max; CPU-upshot=возможен однопоточный предел. Реальный лог: «Я слушаю»
+→ транскрипция«dos» → wake_assistant авторизованпоаудио. Raw безAEC пускает голосколонки.
+
+Исправлено: nativeRNNoise в одном последовательном worker через to_thread+shield;
+на cancellation close ждёт завершения C, освобождениепосле. Не распараллеливать
+statefulкадры. Это responsiveness eventloop, НЕ снижение CPU/гарантия real-time.
+При overbudget upstreamPulse всё ещё может копить задержку; пока рекомендован AEC/off.
+Raw audio-onlywake defaultoff; --audio-wake off перекрывает .env на любом источнике.
+Defaultперебивание во времяголоса требуетимя дажеAEC; послеозвучки3s безимени остаются.
+SLAVIK_UNADDRESSED_BARGE_IN=1 только для опытногоAEC безимени. Текстовый барьер,
+не новыйAEC. Не обещать отсутствие любых ложных wake/слышимость под музыку.
+
+Основнойзапуск: --asr-engine live --mic-source aec --mic-enhancement off --mic-gain 1
+--followup-seconds 3 --audio-wake off. Новыхзависимостей/сборки/helperupdates нет.
+После gitpull на текущейустановке install-linux.sh повторять необязательно.
+184теста среальнымиRNNoise/Speex прошли: worker не блокируетeventloop, cancelнеfreeC
+покаbusy, raw«dos»audio-wakeнеавторизован, defaultAECнетflushискажённогоэха,
+адресованноеbarge/3snameless работают, audio-wakeCLIперекрываетстарыйenv.
+На плате/API новуюправку ещё проверить. Попросить запускAEC/off и эффект; прилагах
+trace-audio и mic-test DSP, без очередной смены quantum/выходов/Spotify.
+
 ## Последний запрос: слышимость под музыку / прямой вход + RNNoise
 
 Пользователь уточнил: в тишине более-менее слышит, не всегда реагирует; с музыкой

@@ -225,7 +225,7 @@ class ListeningRevisionTests(unittest.IsolatedAsyncioTestCase):
              message(input_transcription=NS(text='Стоп, лучше поставь музыку')),
              message(b'stale', turn_complete=True)],
             [message(b'new', turn_complete=True)]])
-        with patch.object(agent.time, 'monotonic', return_value=100), self.assertRaises(RuntimeError):
+        with patch.dict(agent.os.environ, {'SLAVIK_UNADDRESSED_BARGE_IN': '1'}), patch.object(agent.time, 'monotonic', return_value=100), self.assertRaises(RuntimeError):
             await agent.receiver(session, player, gate)
         self.assertEqual(player.flushed, 1)
         self.assertEqual(player.history, [b'first', b'new'])
