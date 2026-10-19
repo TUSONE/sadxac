@@ -1,5 +1,29 @@
 # Славик: план стабилизации и передача следующей модели
 
+## Свежий отчёт: ADC clipping, AEC речь почти на уровне фона, Pulse inspect denied
+
+Пользователь прислал --diagnose/--aec-test revision4bf6672. QuietphysicalRMS~230,
+musicphysicalRMS~11500/clips0.6–0.8%, speechmusicRMS~16000/clips2.6–2.9%, peaks32768.
+Capture+30dB, boost+20dB, ADCPCM0dB, ALC/Noisegateoff. Reference musicRMS2904/3603,
+quiet0. AECright quiet25.7/music20.5/speechmusic28.1,peak252. Опора НЕ молчит;
+сохранность/разборчивость голоса не доказана, клиппинг измерен. Вариацияуровнямузыки
+мешает оценке чистого голосового прироста; нет speechquiet в старом тесте.
+
+Исправлена диагностика: sudoenvpactl неразрешёнsudoers → новый fixed inspect KIND
+в slavik-audio,5read-onlyсписков. install-linux.sh обновляетhelperиsudoers. Вывод
+фильтруется, aec_args толькоallowlistboolean. Ни одного произвольного pactlдействия.
+Добавлен mic-headroom.sh apply: tusone/stopSlavik, backupALSA вуникальнуюпапку,
+ТОЛЬКО Capture12dB вместо30dB (-18dB). Boost/ADC/output/Spotifyнетрогает,
+не сохраняет системныйALSA дляreboot. Отмена Capture30dB. Это опытная величина,
+не доказанныйоптимум и не обещание исправитьAEC. Нужна реальнаяпроверкаclip/speech.
+ТестAEC получилчетвёртуюстадиюspeech_quiet. userкоманды вCURRENT_BEHAVIOR.md.
+Не проситьновыйтотжетестбезобъяснения: теперьизмеряетсяречьбезмузыкиипослеснижения.
+191тестсреальнымиRN/Speexpass; bridge whitelist/deniedmutations/cleanenv,
+actualshellstubпроверяетbackup-before-write/nooutputwrites/backupfailabort,
+diagnosticновыйsudoмаршрут/nosecrets,4stages. No new runtime dependencies.
+Следующийшаг: свежийreport послеinputtrial+helperupdate. ЕслиAECпродолжаетглушить
+речь, смотретьsourcesvolume/source_master/AECDSPпараметры. Преждеихнельзябылопрочитать.
+
 ## Последний запрос: лаги physical+RNNoise и ложное audio-wake после собственной речи
 
 Подтверждён запускphysical+rnnoise+gain2. Screenshot: Python26.1% всех4ядер,

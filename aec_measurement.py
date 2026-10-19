@@ -43,7 +43,7 @@ async def measure(command, stop_process, seconds):
             processes.append(await asyncio.create_subprocess_exec(
                 *command('capture', source), stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE))
-        # Read both pipes throughout; discard two seconds for AEC adaptation.
+        # Read all three pipes throughout; discard two seconds for AEC adaptation.
         for frame in range((seconds + 2) * 50):
             try:
                 chunks = await asyncio.wait_for(asyncio.gather(
@@ -67,6 +67,7 @@ async def run_test(command, stop_process):
     report = {}
     stages = [
         ('quiet', 'Остановите музыку, молчите. Enter: 8 секунд тишины.', 8),
+        ('speech_quiet', 'Без музыки. Enter: 10 секунд говорите с обычного расстояния: «Славик, громкость десять; Славка, включи Кизару».', 10),
         ('music', 'Включите Spotify на Slavik с обычной громкостью, молчите. Enter: 8 секунд музыки.', 8),
         ('speech_music', 'Музыку оставьте. Enter: 10 секунд говорите с обычного расстояния: «Славик, громкость десять; Славка, включи Кизару».', 10),
     ]
@@ -76,7 +77,7 @@ async def run_test(command, stop_process):
         report[name] = await measure(command, stop_process, seconds)
         print(json.dumps({name: report[name]}, ensure_ascii=False), flush=True)
     print('AEC_REPORT=' + json.dumps(report, ensure_ascii=False), flush=True)
-    print('Канал распознавания указан в строке [Mic] при запуске. Сравните quiet/music/speech_music: '
+    print('Канал распознавания указан в строке [Mic] при запуске. Сравните quiet/speech_quiet/music/speech_music: '
           'AEC должен уменьшать музыку и сохранять рост уровня при вашей речи. '
           'Разница physical/aec сама по себе не доказывает эффективность: у узлов может отличаться усиление. '
           'Пришлите AEC_REPORT; по нему выберем дальнейшую настройку.', flush=True)

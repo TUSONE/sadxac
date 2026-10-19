@@ -35,8 +35,18 @@ def summarize_nodes(kind, rows):
                 import shlex
                 allowed = {'aec_method', 'source_master', 'sink_master', 'source_name',
                            'sink_name', 'rate', 'channels'}
-                safe['aec_arguments'] = {k: v for token in shlex.split(row.get('argument', ''))
+                arguments = shlex.split(row.get('argument', ''))
+                safe['aec_arguments'] = {k: v for token in arguments
                                          if '=' in token for k, v in [token.split('=', 1)] if k in allowed}
+                options = {'analog_gain_control', 'digital_gain_control', 'noise_suppression',
+                           'voice_detection', 'extended_filter', 'high_pass_filter',
+                           'mobile', 'comfort_noise', 'drift_compensation'}
+                for token in arguments:
+                    if token.startswith('aec_args='):
+                        safe['aec_options'] = {k: v for option in shlex.split(token.split('=', 1)[1])
+                            if '=' in option for k, v in [option.split('=', 1)]
+                            if k in options and v in ('0', '1', 'true', 'false')}
+
         result.append(safe)
     return result
 
@@ -55,13 +65,15 @@ def snapshot():
     except KeyError:
         report['pulse'] = {'error': 'voice user missing'}
         return report
-    base = ['sudo', '-n', '-H', '-u', 'voice', 'env', f'XDG_RUNTIME_DIR=/run/user/{uid}',
-            f'PULSE_SERVER=unix:/run/user/{uid}/pulse/native', '/usr/bin/pactl']
+    # The installed sudo rule authorizes the fixed bridge, not `sudo env pactl`.
+    # That old route returned command-exited-1 for every node on the real board.
+    base = ['sudo', '-n', '-H', '-u', 'voice',
+            os.getenv('SLAVIK_AUDIO_HELPER', '/usr/local/libexec/slavik-audio'), 'inspect']
     report['pulse'] = {}
     for kind in ('modules', 'sinks', 'sources', 'sink-inputs', 'source-outputs'):
-        raw = command(base + ['--format=json', 'list', kind])
+        raw = command(base + [kind])
         if isinstance(raw, dict):
-            report['pulse'][kind] = raw
+            report['pulse'][kind] = {**raw, 'hint': 'Обновите установленный аудиомост и sudoers: bash install-linux.sh.'}
             continue
         try:
             report['pulse'][kind] = summarize_nodes(kind, json.loads(raw))

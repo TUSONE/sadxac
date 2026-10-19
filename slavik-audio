@@ -26,6 +26,12 @@ if args == ['duck']:
     from music_duck import serve
     serve(environment)
     raise SystemExit(0)
+if len(args) == 2 and args[0] == 'inspect' and args[1] in (
+        'modules', 'sinks', 'sources', 'sink-inputs', 'source-outputs'):
+    # Fixed read-only operations; no arbitrary pactl commands or caller env.
+    result = subprocess.run(['/usr/bin/pactl', '--format=json', 'list', args[1]],
+                            env=environment, check=True, timeout=8)
+    raise SystemExit(result.returncode)
 if args == ['check']:
     for kind, required in [('sources', 'voice_aec_source'), ('sinks', 'voice_aec_sink')]:
         result = subprocess.run(['/usr/bin/pactl', 'list', kind, 'short'], env=environment,

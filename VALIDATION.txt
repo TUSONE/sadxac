@@ -1,3 +1,17 @@
+2026-10-20: measured mic clipping and repaired read-only Pulse diagnostics
+191 unittest tests passed with real native RNNoise/SpeexDSP libraries (0 skipped).
+Board report revision4bf6672: Capture+30dB/boost+20dB; physical clip~0.6–0.8% music,
+~2.6–2.9% speech+music; reference has music; AEC right RMS25.7quiet/20.5music/28.1speechmusic.
+No claim of isolated speech SNR or sole cause: no speechquiet baseline, song level varied.
+All Pulse queries denied: old sudo env pactl not allowed by installed sudoers. Changed to
+fixed inspect bridge (5 read-only lists); safe environment and argument/secret allowlists.
+Tests execute bridge under stubs, reject mutations/injections/extra args, verify caller
+uses helper; execute actual headroom shell with fake hardware commands, verify backup
+precedes only Capture12dB write, no output/Pulse changes, no write on backup failure.
+AEC measurement stage order now quiet/speech_quiet/music/speech_music; no audio stored.
+Headroom trial reduces reported PGA18dB, full ALSA backup, no automatic persistence.
+Actual post-change clipping/hearing/AEC effect unverified: no board or Gemini access.
+
 2026-10-20: realtime capture scheduling and playback feedback regression
 184 unittest tests passed with actual native RNNoise/SpeexDSP libraries, 0 skipped.
 Added regression tests: slow DSP leaves asyncio responsive; cancelled capture waits

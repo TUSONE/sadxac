@@ -70,3 +70,28 @@ class ReferenceTests(unittest.TestCase):
         result = d.reference_routing(topology)
         self.assertEqual(len(result['warnings']), 2)
         self.assertEqual(d.reference_routing({})['status'], 'unknown')
+
+
+class BridgeSnapshotTests(unittest.TestCase):
+    def test_snapshot_uses_installed_helper_without_unauthorized_sudo_env(self):
+        calls = []
+        def command(args):
+            calls.append(args)
+            return '[]' if 'inspect' in args else ''
+        with patch.object(d, 'command', side_effect=command), \
+             patch.object(d.pwd, 'getpwnam', return_value=NS(pw_uid=1001)), \
+             patch.dict(d.os.environ, {'SLAVIK_AUDIO_HELPER': '/usr/local/libexec/slavik-audio'}):
+            result = d.snapshot()
+        queries = [args for args in calls if 'inspect' in args]
+        self.assertEqual(len(queries), 5)
+        for args in queries:
+            self.assertEqual(args[:7], ['sudo', '-n', '-H', '-u', 'voice', '/usr/local/libexec/slavik-audio', 'inspect'])
+            self.assertNotIn('env', args)
+        self.assertTrue(all(isinstance(v, list) for v in result['pulse'].values()))
+
+    def test_aec_dsp_options_are_allowlisted_and_credentials_removed(self):
+        module = {'name': 'module-echo-cancel', 'argument':
+            'aec_method=webrtc aec_args="noise_suppression=1 digital_gain_control=0 password=secret custom=secret"'}
+        result = d.summarize_nodes('modules', [module])[0]
+        self.assertEqual(result['aec_options'], {'noise_suppression': '1', 'digital_gain_control': '0'})
+        self.assertNotIn('secret', json.dumps(result))

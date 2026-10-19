@@ -45,3 +45,15 @@ class CaptureTests(unittest.IsolatedAsyncioTestCase):
             self.assertGreater(result[source]['right']['rms'], 1900)
             self.assertLess(result[source]['left']['rms'], 210)
             self.assertEqual(result[source]['right']['clipped_percent'], 0)
+
+    async def test_test_sequence_includes_speech_without_music(self):
+        import contextlib
+        import io
+        from unittest.mock import AsyncMock, patch
+        import aec_measurement as measurement
+        capture = AsyncMock(return_value={'physical': {}, 'aec': {}, 'playback_reference': {}})
+        output = io.StringIO()
+        with patch('builtins.input', return_value=''), patch.object(measurement, 'measure', capture), contextlib.redirect_stdout(output):
+            await measurement.run_test(None, None)
+        self.assertEqual([call.args[2] for call in capture.await_args_list], [8, 10, 8, 10])
+        self.assertIn('"speech_quiet":', output.getvalue())
