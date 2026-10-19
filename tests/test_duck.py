@@ -195,8 +195,8 @@ class HardwareOutputTests(unittest.TestCase):
             return SimpleNamespace(stdout='Headphone:0')
         with tempfile.TemporaryDirectory() as directory, patch.object(music_duck.subprocess, 'run', side_effect=run):
             music_duck.restore_hardware_output({'XDG_RUNTIME_DIR': directory})
-        self.assertIn(['/usr/bin/amixer', '-c', 'WM89602Mic', 'sset', 'Headphone', '100%'], calls)
-        self.assertIn(['/usr/bin/pactl', 'set-sink-volume', sink['name'], '65536'], calls)
+        self.assertIn(['/usr/bin/amixer', '-c', 'WM89602Mic', 'sset', 'Headphone', '0dB'], calls)
+        self.assertIn(['/usr/bin/pactl', 'set-sink-volume', sink['name'], '39322'], calls)
         self.assertFalse(any('Capture' in c or 'set-source-volume' in c for c in calls))
 
     def test_missing_card_or_sink_never_changes_levels(self):
@@ -211,9 +211,11 @@ class HardwareOutputTests(unittest.TestCase):
         import json
         import music_duck
         sinks = [{'name': 'alsa_output.platform-sound_i2s.stereo-fallback',
-                  'base_volume': {'value': 52057}, 'volume': {'left': {'value': 65536}, 'right': {'value': 65536}}, 'mute': False},
+                  'base_volume': {'value': 52057}, 'volume': {'left': {'value': 39322}, 'right': {'value': 39322}}, 'mute': False},
                  {'name': 'voice_aec_sink', 'mute': False}]
-        mixer = ''.join("Simple mixer control '%s',0\n Front Left [100%%] [6.00dB]\n Front Right [100%%] [6.00dB]\n" % name for name in ('Headphone', 'Speaker', 'Playback'))
+        mixer = ''.join(
+            f"Simple mixer control '{name}',0\n Front Left [{percent}%] [0.00dB]\n Front Right [{percent}%] [0.00dB]\n"
+            for name, percent in (('Headphone', 95), ('Speaker', 95), ('Playback', 100)))
         mixer += ''.join("Simple mixer control '%s',0\n Playback [on]\n" % name for name in ('Left Output Mixer PCM', 'Right Output Mixer PCM'))
         calls = []
         def run(command, **kwargs):

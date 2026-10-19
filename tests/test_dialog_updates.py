@@ -48,6 +48,7 @@ class DialogueTests(unittest.IsolatedAsyncioTestCase):
             clock.return_value = 100
             gate.feed_transcript('Славик привет')
             gate.complete_turn()
+            gate.reply_played = True
             async def tick(_):
                 nonlocal count
                 count += 1
@@ -183,6 +184,7 @@ class ListeningRevisionTests(unittest.IsolatedAsyncioTestCase):
         from test_agent import FakePlayer, FakeSession, message
         gate, player = agent.WakeGate(), FakePlayer()
         with patch.object(agent.time, 'monotonic', return_value=100) as clock:
+            gate.set_music_state(True)
             with self.assertRaises(RuntimeError):
                 await agent.receiver(FakeSession([[message(b'ack', input_transcription=NS(text='Эй Славка'), turn_complete=True)]]), player, gate)
             self.assertEqual(player.audio, [])
@@ -194,6 +196,7 @@ class ListeningRevisionTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(gate.waiting_for_command)
         with patch.object(agent.time, 'monotonic', return_value=200) as clock:
             gate = agent.WakeGate()
+            gate.set_music_state(True)
             gate.feed_transcript('Славик')
             clock.return_value = 203
             self.assertFalse(gate.waiting_for_command)
@@ -244,6 +247,7 @@ class ListeningRevisionTests(unittest.IsolatedAsyncioTestCase):
         player = NS(queue=asyncio.Queue(), audio_until=0)
         gate = agent.WakeGate()
         with patch.object(agent.time, 'monotonic', side_effect=lambda: clock_value):
+            gate.set_music_state(True)
             gate.feed_transcript('Славик')
             ticks = 0
             async def tick(_):
@@ -258,7 +262,7 @@ class ListeningRevisionTests(unittest.IsolatedAsyncioTestCase):
                  patch.object(agent.asyncio, 'sleep', side_effect=tick):
                 with self.assertRaises(asyncio.CancelledError):
                     await agent.conversation_focus(gate, player)
-        self.assertEqual(commands, [b'on\n', b'off\n'])
+        self.assertEqual(commands, [b'listen\n', b'off\n'])
 
     async def test_search_quota_does_not_forbid_stable_knowledge_or_retry_quota(self):
         from google import genai

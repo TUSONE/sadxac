@@ -11,7 +11,7 @@ voice_pulse() {
 }
 output=alsa_output.platform-sound_i2s.stereo-fallback
 input=alsa_input.platform-sound_i2s.stereo-fallback
-# Physical output fixed at 100%; music and voice use separate stream levels.
+# Physical output fixed at 60%; music and voice use separate stream levels.
 for control in Headphone Speaker Playback 'Left Output Mixer PCM' 'Right Output Mixer PCM'; do
     sudo amixer -c 0 sget "$control" >/dev/null
 done
@@ -28,12 +28,12 @@ sudo alsactl -f "$backup/alsa.state" store 0
 voice_pulse --format=json list sinks > "$backup/sinks.json"
 voice_pulse --format=json list sources > "$backup/sources.json"
 for control in Headphone Speaker; do
-    sudo amixer -c 0 sset "$control" 100% >/dev/null
+    sudo amixer -c 0 sset "$control" 0dB >/dev/null
 done
 sudo amixer -c 0 sset Playback 100% >/dev/null
 sudo amixer -c 0 sset 'Left Output Mixer PCM' on >/dev/null
 sudo amixer -c 0 sset 'Right Output Mixer PCM' on >/dev/null
-voice_pulse set-sink-volume "$output" 100%
+voice_pulse set-sink-volume "$output" 60%
 voice_pulse set-sink-volume voice_aec_sink 100%
 voice_pulse set-sink-mute "$output" 0
 if [[ $# == 0 ]]; then
@@ -45,7 +45,7 @@ if [[ $# == 0 ]]; then
 fi
 sudo alsactl store 0
 printf 'Резервная копия: %s\n' "$backup"
-printf '%s\n' 'Физический Pulse-выход и voice_aec_sink: 100%.'
+printf '%s\n' 'Физический Pulse-выход: 60%; voice_aec_sink: 100%.'
 if [[ $# == 0 ]]; then
     printf '%s\n' 'Вход: Pulse 80%, boost 20 dB. Остановите музыку и повторите --calibrate-mic.'
 fi

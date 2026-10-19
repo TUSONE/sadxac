@@ -19,6 +19,19 @@ def is_music(stream):
             props.get('application.name') == 'SlavikSpotify')
 
 
+def music_playing(streams, saved=None):
+    """A paused/corked, muted or silent-volume Connect stream is not audible music."""
+    for stream in streams:
+        if not is_music(stream) or stream.get('corked') is not False or stream.get('mute', False):
+            continue
+        current = volumes(stream)
+        original, reduced = (saved or {}).get(identity(stream), (None, None))
+        level = original if original is not None and current == reduced else current
+        if any(v > 0 for v in level):
+            return True
+    return False
+
+
 def identity(stream):
     props = stream.get('properties') or {}
     return (stream['index'], stream.get('client'), props.get('application.process.id'),
@@ -39,7 +52,7 @@ class Ducker:
         if self.store:
             self.store.save(self.saved)
 
-    def update(self, streams, active):
+    def update(self, streams, active, listening=False):
         present = {identity(s): s for s in streams if is_music(s)}
         for key in list(self.saved):
             original, reduced = self.saved[key]
@@ -57,8 +70,14 @@ class Ducker:
             for key, stream in present.items():
                 if key not in self.saved:
                     original = volumes(stream)
-                    # Pulse volume is cubic: .8 control ~= .512 amplitude (-5.8 dB).
-                    reduced = [round(v * .8) for v in original]
+                else:
+                    original, previous = self.saved[key]
+                    if volumes(stream) != previous:
+                        continue  # a manual change wins over mode transitions
+                # Name-only listening: silence music, not the player or master.
+                # Ordinary speech: .8 Pulse control ~= -5.8 dB amplitude.
+                reduced = [0 if listening else round(v * .8) for v in original]
+                if key not in self.saved or self.saved[key][1] != reduced:
                     self.saved[key] = original, reduced
                     self.persist()  # journal BEFORE changing Pulse volume
                     self.change(stream['index'], reduced)
@@ -115,8 +134,11 @@ def _serve(environment, store):
         raise SystemExit(0)
     signal.signal(signal.SIGTERM, terminate)
     signal.signal(signal.SIGINT, terminate)
-    ducker.update(snapshot(), False)  # recover a prior crashed helper before ducking again
+    streams = snapshot()
+    ducker.update(streams, False)  # recover a prior crashed helper before ducking again
+    print('music:on' if music_playing(streams, ducker.saved) else 'music:off', flush=True)
     active = False
+    listening = False
     pending = b''
     try:
         while True:
@@ -128,19 +150,22 @@ def _serve(environment, store):
                 pending += chunk
                 while b'\n' in pending:
                     line, pending = pending.split(b'\n', 1)
-                    if line not in (b'on', b'off'):
-                        raise ValueError('Expected on/off')
-                    active = line == b'on'
+                    if line not in (b'on', b'off', b'listen'):
+                        raise ValueError('Expected on/off/listen')
+                    active = line != b'off'
+                    listening = line == b'listen'
                 if len(pending) > 16:
                     raise ValueError('Invalid duck command')
-            if active or ducker.saved:
-                ducker.update(snapshot(), active)
+            streams = snapshot()
+            playing = music_playing(streams, ducker.saved)
+            ducker.update(streams, active, listening)
+            print('music:on' if playing else 'music:off', flush=True)
     finally:
         ducker.update(snapshot(), False)
 
 
 def prepare_output(environment):
-    """Master outputs stay at unity; volume changes belong to individual streams."""
+    """AEC master stays at unity; music/voice keep independent stream levels."""
     def pulse(*args):
         return subprocess.run(['/usr/bin/pactl', *args], env=environment,
                               capture_output=True, text=True, timeout=3, check=True).stdout
@@ -163,7 +188,7 @@ def restore_hardware_output(environment):
     physical = next((s for s in sinks if s['name'] == 'alsa_output.platform-sound_i2s.stereo-fallback'), None)
     if physical is None:
         raise RuntimeError('Missing WM8960 physical sink')
-    base = 65536  # Explicit user policy: physical Pulse output stays at 100%.
+    base = round(65536 * .60)  # Latest user policy: physical output 60%, AEC unity.
     card = 'WM89602Mic'
     info = run(['/usr/bin/amixer', '-c', card, 'info'])
     if 'WM8960' not in info:
@@ -182,19 +207,29 @@ def restore_hardware_output(environment):
         with backup.open('x') as f:
             backup.chmod(0o600)
             json.dump({'physical': physical, 'mixer': mixer}, f)
-    for control, value in [('Headphone', '100%'), ('Speaker', '100%'), ('Playback', '100%'),
+    mixer_changed = False
+    for control, value in [('Headphone', '0dB'), ('Speaker', '0dB'), ('Playback', '100%'),
                            ('Left Output Mixer PCM', 'on'), ('Right Output Mixer PCM', 'on')]:
         block = controls.get(control, '')
         levels = re.findall(r'\[(\d+)%\]', block)
-        already_set = (len(levels) >= 2 and all(int(v) == 100 for v in levels)
-                       if value != 'on' else '[on]' in block and '[off]' not in block)
+        if value == 'on':
+            already_set = '[on]' in block and '[off]' not in block
+        elif value == '0dB':
+            db = re.findall(r'\[(-?\d+(?:\.\d+)?)dB\]', block)
+            # Preserve an already attenuated analogue output. Restore zeroed
+            # channels and cap positive gain instead of forcing +6 dB each start.
+            already_set = (len(levels) >= 2 and all(int(v) > 0 for v in levels)
+                           and len(db) >= 2 and all(float(v) <= 0 for v in db))
+        else:
+            already_set = len(levels) >= 2 and all(int(v) == 100 for v in levels)
         if not already_set:
             run(['/usr/bin/amixer', '-c', card, 'sset', control, value])
-    if any(v['value'] != base for v in physical.get('volume', {}).values()):
+            mixer_changed = True
+    if mixer_changed or any(v['value'] != base for v in physical.get('volume', {}).values()):
         run(['/usr/bin/pactl', 'set-sink-volume', physical['name'], str(base)])
     if physical.get('mute') is not False:
         run(['/usr/bin/pactl', 'set-sink-mute', physical['name'], '0'])
     aec = next((s for s in sinks if s['name'] == 'voice_aec_sink'), None)
     if aec and aec.get('mute') is not False:
         run(['/usr/bin/pactl', 'set-sink-mute', 'voice_aec_sink', '0'])
-    print('WM8960: PCM включён; физический Pulse-выход 100%.')
+    print('WM8960: PCM включён; физический Pulse-выход 60%.')

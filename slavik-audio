@@ -36,7 +36,7 @@ if args == ['check']:
     print('AEC source/sink present under voice')
     raise SystemExit(0)
 if len(args) == 2 and args[0] == 'volume':
-    raise SystemExit('Master output is fixed at 100%. Use Spotify music volume or voice_volume.')
+    raise SystemExit('Physical output is fixed at 60%; AEC at 100%. Use Spotify music volume or voice_volume.')
 if len(args) != 2 or args[0] not in ('capture', 'playback') or not re.fullmatch(r'[A-Za-z0-9_.-]+', args[1]):
     raise SystemExit('Expected: check | capture SOURCE | playback SINK')
 if args[0] == 'capture':

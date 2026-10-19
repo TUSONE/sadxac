@@ -10,6 +10,7 @@ import math
 import signal
 from difflib import SequenceMatcher
 from assistant_tools import KNOWLEDGE_DECLARATIONS, weather, web_search, tool_outcome
+from meme_lore import DECLARATION as LORE_DECLARATION, lookup_lore, lore_instruction
 from contextlib import AsyncExitStack, asynccontextmanager
 from mic_processing import load_processor
 from array import array
@@ -92,7 +93,9 @@ def system_instruction():
         "снова молчи до следующего обращения. Имя может быть в начале, середине "
         "или конце фразы: «Славка, как дела?» и «Как дела, Славка?» одинаково "
         "обращены к тебе. Дослушай фразу перед ответом. Не начинай разговор сам. "
-        "Если сказали только имя, молча жди команду три секунды: не отвечай «Что хотел?». "
+        "Если сказали только имя, вызови wake_assistant с command_present=false и "
+        "следуй результату: при играющей музыке молча жди команду три секунды, "
+        "без музыки кратко скажи «Я слушаю». "
         "Во время твоего ответа и три секунды после него пользователь может перебить "
         "и продолжить без повторения имени. Уступи ему слово, слушай новую просьбу."
         if WAKE_ENABLED else
@@ -107,7 +110,8 @@ def system_instruction():
                 "Не предлагай новые темы и не продолжай беседу сам.")
     audio_wake = """Определяй обращение по самому входному аудио: текст транскрипции может ошибаться.
 Когда в аудио пользователь явно обращается к тебе по имени, сначала вызови wake_assistant
-с addressed=true, затем отвечай или выполняй команду. Имя может быть в любой части фразы.
+с addressed=true и command_present=true, если есть просьба, либо false, если только имя.
+Затем следуй результату инструмента. Имя может быть в любой части фразы.
 Не вызывай wake_assistant для музыки, текста песни, своего голоса, посторонней речи
 или просто потому, что понял команду без обращения. При сомнении оставайся молчаливым.
 Не опирайся на написание имени в транскрипции, если само аудио понятно."""
@@ -295,8 +299,12 @@ class WakeGate:
         self.input_authorized = False
         self.asr_pending = False
         self.reply_started = False
+        self.reply_played = False
+        self.reply_generation_done = False
         self.awaiting_answer = False
         self.wake_wait_until = 0.0
+        self.music_active = False
+        self.music_state_at = 0.0
         if self.followup_enabled and AWAKE_SECONDS <= 0:
             raise ValueError("SLAVIK_AWAKE_SECONDS must be positive")
         self.awake_until = 0.0
@@ -321,8 +329,17 @@ class WakeGate:
     def waiting_for_command(self):
         return time.monotonic() < self.wake_wait_until
 
+    @property
+    def music_playing(self):
+        return self.music_active and time.monotonic() - self.music_state_at < 3
+
+    def set_music_state(self, active):
+        self.music_active = active
+        self.music_state_at = time.monotonic()
+
     def complete_turn(self):
         self.reply_started = False
+        self.reply_generation_done = True
         self.duck_pending_until = 0.0
         self.last_utterance = ""
         if self.music_finish_pending:
@@ -364,7 +381,7 @@ class WakeGate:
             was_asleep = not self.awake
             self.extend()
             # Use the full current utterance, including split transcription.
-            self.wake_wait_until = now + 3 if (wake_only(self.last_utterance) or wake_only(self.input_buf)) else 0
+            self.wake_wait_until = now + 3 if self.music_playing and (wake_only(self.last_utterance) or wake_only(self.input_buf)) else 0
             if self.waiting_for_command:
                 self.command_authorized = False
             self.input_buf = ""
@@ -599,22 +616,37 @@ class PulsePlayer:
 
 
 
+async def music_state_reader(proc, gate):
+    """Read only fixed music:on/off heartbeat records from the audio bridge."""
+    try:
+        while line := await proc.stdout.readline():
+            if line in (b'music:on\n', b'music:off\n'):
+                gate.set_music_state(line == b'music:on\n')
+    finally:
+        gate.set_music_state(False)
+
+
 async def conversation_focus(gate, player, capture=None):
     """Duck only addressed work and audible speech; no post-reply duck timeout."""
     proc = None
     last_active = None
-    previously_busy = False
+    status_task = None
     try:
-        if os.getenv("SLAVIK_MUSIC_DUCK", "1") == "1" and os.getenv("SLAVIK_AUDIO_HELPER"):
+        duck_enabled = os.getenv("SLAVIK_MUSIC_DUCK", "1") == "1"
+        if duck_enabled and os.getenv("SLAVIK_AUDIO_HELPER"):
             proc = await asyncio.create_subprocess_exec(
                 "sudo", "-n", "-H", "-u", "voice", os.environ["SLAVIK_AUDIO_HELPER"], "duck",
-                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.DEVNULL,
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL)
+            if getattr(proc, 'stdout', None) is not None:
+                status_task = asyncio.create_task(music_state_reader(proc, gate))
         while True:
             busy = not player.queue.empty() or time.monotonic() < player.audio_until + .12
-            if previously_busy and not busy and gate.followup_enabled and gate.addressed:
+            finished_reply = gate.reply_played and gate.reply_generation_done and not busy
+            if finished_reply and gate.followup_enabled:
                 gate.extend()  # a full window from audible end, not generation end
-            previously_busy = busy
+                gate.addressed = True
+                gate.reply_played = False
             if gate.close_when_drained and not busy:
                 gate.awake_until = 0
                 gate.command_authorized = False
@@ -622,23 +654,27 @@ async def conversation_focus(gate, player, capture=None):
                 gate.close_when_drained = False
             elif busy:
                 gate.extend()
-            if not gate.response_allowed and not busy and not gate.waiting_for_command:
+            if not gate.response_allowed and not busy and not gate.waiting_for_command and not (gate.followup_enabled and gate.awake):
                 gate.addressed = False
             active = gate.addressed and (gate.waiting_for_command or busy or (gate.response_allowed and time.monotonic() < gate.duck_pending_until))
             if proc and proc.returncode is not None:
                 print('[Audio] Приглушение недоступно: обновите аудиомост через bash install-linux.sh.', flush=True)
                 proc = None
-            if proc and active != last_active:
+            mode = b'listen\n' if gate.waiting_for_command else (b'on\n' if active else b'off\n')
+            if proc and mode != last_active:
                 try:
-                    proc.stdin.write(b'on\n' if active else b'off\n')
+                    proc.stdin.write(mode)
                     await proc.stdin.drain()
-                    last_active = active
+                    last_active = mode
                 except (BrokenPipeError, ConnectionResetError):
                     await stop_process(proc)
                     proc = None
                     print('[Audio] Приглушение недоступно: проверьте аудиомост.', flush=True)
             await asyncio.sleep(.2)
     finally:
+        if status_task:
+            status_task.cancel()
+            await asyncio.gather(status_task, return_exceptions=True)
         if proc:
             # EOF lets the helper restore stream volumes, including on Ctrl+C.
             proc.stdin.close()
@@ -706,6 +742,7 @@ async def receiver(session, player, gate, tool_queue=None, verified_asr=False, e
                             # interrupt without repeating the name. Echo is rejected above.
                             echo.protect_playback(player)
                             await player.flush()
+                            gate.reply_played = False
                             if audible_turn is True:
                                 audible_turn = False
                                 pending_request = gate.last_utterance
@@ -724,13 +761,18 @@ async def receiver(session, player, gate, tool_queue=None, verified_asr=False, e
                 # never bypasses the sleeping gate.
                 for call in calls:
                     if (audio_wake_enabled() and not input_rejected and not echo.playing(player) and
-                            time.monotonic() >= echo.tail_until and not gate.waiting_for_command and call.name == "wake_assistant" and
+                            time.monotonic() >= echo.tail_until and
+                            (not gate.waiting_for_command or (call.args or {}).get('command_present') is True) and call.name == "wake_assistant" and
                             (call.args or {}).get("addressed") is True):
                         gate.addressed = True
                         gate.duck_pending_until = time.monotonic() + 30
                         gate.music_finish_pending = gate.close_when_drained = False
                         gate.extend()
                         gate.command_authorized = True
+                        gate.wake_wait_until = (time.monotonic() + 3
+                            if (call.args or {}).get('command_present') is False and gate.music_playing else 0)
+                        if gate.waiting_for_command:
+                            gate.command_authorized = False
                         print("[Славик активирован по аудио]", flush=True)
                 for call in calls:
                     event_log("tool_received", tool=call.name, id=call.id, authorized=gate.response_allowed,
@@ -758,6 +800,8 @@ async def receiver(session, player, gate, tool_queue=None, verified_asr=False, e
                         audible_turn = gate.response_allowed
                         if audible_turn:
                             gate.reply_started = True
+                            gate.reply_played = True
+                            gate.reply_generation_done = False
                             gate.input_authorized = False
                     if audible_turn:
                         for chunk, rate in chunks:
@@ -770,13 +814,14 @@ async def receiver(session, player, gate, tool_queue=None, verified_asr=False, e
                     await player.finish_turn()
                 audible_turn = None
                 gate.complete_turn()
-                if pending_request is not None:
+                if pending_request is not None and not (wake_only(pending_request) and gate.wake_wait_until > 0 and not gate.waiting_for_command):
                     gate.last_utterance = pending_request
-                    gate.command_authorized = not wake_only(pending_request)
+                    gate.command_authorized = not (wake_only(pending_request) and gate.wake_wait_until > 0)
                     gate.addressed = True
                     gate.duck_pending_until = time.monotonic() + 30
-                    gate.extend()
-                    pending_request = None
+                    if not gate.waiting_for_command:
+                        gate.extend()
+                pending_request = None
                 gate.asr_pending = False
         if not received:
             raise RuntimeError("Live receive stream ended without a turn")
@@ -812,6 +857,8 @@ async def tool_worker(session, queue, spotify, player=None, gate=None):
                 result = await asyncio.to_thread(weather, dict(call.args or {}))
             elif call.name == "web_search":
                 result = await web_search(dict(call.args or {}))
+            elif call.name == "meme_lore":
+                result = lookup_lore(dict(call.args or {}))
             elif call.name != "spotify_command" or spotify is None:
                 result = "Неизвестный инструмент."
             else:
@@ -942,7 +989,8 @@ async def route_volume(args, spotify, player, utterance=None):
 
 AUDIO_DECLARATIONS = [{"name": "wake_assistant",
     "description": "Подтверди явно услышанное В АУДИО обращение пользователя по имени Славик/Славка. Транскрипция может быть ошибочной. Вызывай перед ответом/командами после обращения; не вызывай для фоновой речи, музыки, своего голоса или команды без обращения вне окна диалога.",
-    "parameters": {"type": "OBJECT", "properties": {"addressed": {"type": "BOOLEAN"}}, "required": ["addressed"]}},
+    "parameters": {"type": "OBJECT", "properties": {"addressed": {"type": "BOOLEAN"},
+        "command_present": {"type": "BOOLEAN", "description": "false, если пользователь произнёс только имя; true, если есть вопрос/команда"}}, "required": ["addressed"]}},
     {"name": "audio_volume",
     "description": "ТОЛЬКО громкость музыки Spotify: погромче, потише, сделай громкость50. Никогда не меняет голос Славика. up/down шаг10, set percent0..100.",
     "parameters": {"type": "OBJECT", "properties": {
@@ -997,9 +1045,8 @@ def assistant_instruction(enable_spotify):
 расскажу, когда получится»: фонового уведомления у тебя нет.
 Меллстрой / Молстрой / Mellstroy в контексте блогеров — Андрей Бурим,
 русскоязычный стример из Беларуси, известный провокационными трансляциями.
-Пользователю интересны TikTok-мемы про него, включая «маму-птицу» и «село Молочное».
-Это названия из запроса пользователя, а не проверенная история их происхождения.
-Узнавай эти отсылки; если не знаешь конкретный ролик, попроси цитату или контекст,
+Пользователь передал разбор мемной вселенной: детали доступны в meme_lore.
+Если конкретного ролика/факта в справочнике нет, попроси цитату или контекст,
 а не сочиняй объяснение. Не утверждай, что знаешь все мемы из TikTok.
 Общайся как Славик: живо, по-дружески, со стримерской энергией, короткими репликами
 и уместными мемами. По тону пользователя допустим разговорный мат без оскорблений
@@ -1037,7 +1084,7 @@ def assistant_instruction(enable_spotify):
 Если попросили только один трек, не добавляй подборку. Не придумывай названия.
 Не запускай несколько play_track подряд ради подборки: это перебьёт первую песню.
 """ if enable_spotify else "Управление Spotify сейчас недоступно; не заявляй, что включил музыку."
-    return system_instruction() + capabilities + music
+    return system_instruction() + capabilities + music + lore_instruction()
 
 
 def make_config(enable_spotify=False):
@@ -1045,7 +1092,7 @@ def make_config(enable_spotify=False):
     return types.LiveConnectConfig(
         response_modalities=[types.Modality.AUDIO],
         system_instruction=assistant_instruction(enable_spotify),
-        tools=[types.Tool(function_declarations=[d for d in AUDIO_DECLARATIONS if d["name"] != "wake_assistant" or (audio_wake_enabled() and not independent_asr())] + KNOWLEDGE_DECLARATIONS + (SPOTIFY_DECLARATIONS if enable_spotify else []))],
+        tools=[types.Tool(function_declarations=[d for d in AUDIO_DECLARATIONS if d["name"] != "wake_assistant" or (audio_wake_enabled() and not independent_asr())] + KNOWLEDGE_DECLARATIONS + [LORE_DECLARATION] + (SPOTIFY_DECLARATIONS if enable_spotify else []))],
         speech_config=types.SpeechConfig(
             voice_config=types.VoiceConfig(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=VOICE)

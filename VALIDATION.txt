@@ -1,3 +1,13 @@
+2026-10-20 Asia/Tashkent: physical60/music-aware wake/local fan-lore
+152 unittest tests passed: physical60 and analogue positive-gain cap without Capture writes;
+no-write at correct levels; active/paused/muted/zero-volume music; listen(0)/speech-duck/restore
+and manual override; IPC heartbeat/EOF/stale state; music-only silent name, quiet acknowledgement;
+audible-end3s even after rejected echo; cancelled generation does not reopen expired name wait;
+23-section actual local lore retrieval/overview/aliases/uncertainty, sleep gate, invalid data.
+No new runtime dependencies. Existing Flash Live, Spotify backend,48k/quantum480 preserved.
+Real board playback/AEC/hearing and Google model adherence not verified; no Gemini key/hardware.
+Fan-lore is the user's supplied secondary account, not independently verified factual sources.
+
 2026-10-19: listening/reference/search revision
 134 unittest tests passed in cloud: bare-name silence and 3s deadline, duck on/off,
 address-free local barge-in, stale generation suppression, whole-word echo rejection,

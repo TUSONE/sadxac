@@ -26,7 +26,7 @@ class AudioBridgeTests(unittest.TestCase):
     def test_legacy_master_volume_cannot_change_fixed_outputs(self):
         for value in ('up', 'down', '50'):
             calls, code, text = self.bridge(value)
-            self.assertIn('fixed at 100%', code)
+            self.assertIn('fixed at 60%', code)
             self.assertEqual(calls, [])
 
     def test_invalid_volume_never_runs_pactl(self):

@@ -21,7 +21,7 @@ def summarize_nodes(kind, rows):
     if not isinstance(rows, list):
         return {'error': 'unexpected Pulse response'}
     fields = ('index', 'name', 'state', 'sample_specification', 'channel_map',
-              'mute', 'volume', 'base_volume', 'sink', 'source', 'owner_module',
+              'mute', 'corked', 'volume', 'base_volume', 'sink', 'source', 'owner_module',
               'buffer_usec', 'sink_usec', 'source_usec', 'monitor_of_sink')
     properties = ('application.name', 'application.process.binary', 'application.process.id', 'media.name', 'node.name', 'device.description')
     result = []
