@@ -5,7 +5,7 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 [[ $(id -un) == tusone ]] || { echo 'Install as tusone' >&2; exit 1; }
 [[ $(pwd -P) == "$HOME/slavik" ]] || { echo 'Extract into ~/slavik' >&2; exit 1; }
 packages=()
-for name in python3 python3-venv python3-dev build-essential libffi-dev libssl-dev rustc cargo pkg-config pulseaudio-utils sudo; do
+for name in python3 python3-venv python3-dev build-essential libffi-dev libssl-dev rustc cargo pkg-config pulseaudio-utils sudo libspeexdsp1; do
     packages+=("$name")
 done
 # ARMv7 may need source builds for pydantic-core/cryptography. Keep TLS/signatures enabled.

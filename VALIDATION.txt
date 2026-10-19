@@ -1,3 +1,17 @@
+2026-10-20 Asia/Tashkent: short memes / command listen hold / optional native NS+AGC
+169 unittest tests passed with real SpeexDSP (0 skipped): actual C noise reduction,
+PCM duration/frame continuity/close safety, ABI target/max-gain controls, fixed-point
+AGC-unavailable fallback; VAD never authorizes, silence timeout, bounded speech hold,
+late-ASR command accepted, full music silence retained until reply, late Pulse ack,
+continuous mic sending, CLI override, single-joke/no-lore and actual-utterance override.
+SpeexDSP1.2.1 from official xiph/speexdsp annotated tag resolved to
+1b28a0f61bc31162979e1f26f3981fc3637095c8; built floating-point smallft with GCC in
+/workspace/slavik-review/libspeexdsp-test.so. Native synthetic-noise RMS289.0→55.7;
+64000 samples (4s) processed in0.0249s on cloud x86_64; no speech/ARM-quality claim.
+Board installs libspeexdsp1 via apt (normal signature/TLS verification unchanged).
+No audio was recorded from hardware; no Gemini key or board access; real recognition,
+response latency, speaker identity and live model output format remain unverified.
+
 2026-10-20 Asia/Tashkent: physical60/music-aware wake/local fan-lore
 152 unittest tests passed: physical60 and analogue positive-gain cap without Capture writes;
 no-write at correct levels; active/paused/muted/zero-volume music; listen(0)/speech-duck/restore

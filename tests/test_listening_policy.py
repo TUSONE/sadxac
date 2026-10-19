@@ -160,7 +160,7 @@ class ListeningTests(unittest.IsolatedAsyncioTestCase):
              patch.object(music_duck.signal, 'signal'), patch('builtins.print', side_effect=lambda *a, **k: statuses.append(a[0])):
             music_duck._serve({}, None)
         self.assertEqual(current[0], 65536)
-        self.assertEqual(statuses, ['music:on', 'music:on'])
+        self.assertEqual(statuses, ['music:on', 'duck:listen', 'music:on'])
 
     async def test_old_generation_does_not_reopen_expired_music_name_wait(self):
         class Player(FakePlayer):

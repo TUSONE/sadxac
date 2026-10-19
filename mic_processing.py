@@ -52,6 +52,7 @@ class InputProcessor:
         self.gain = gain
         self.highpass = HighPass()
         self.limited_frames = 0
+        self.enhancer = None
 
     def process(self, raw):
         values = self.highpass.filter(samples(raw))
@@ -59,7 +60,8 @@ class InputProcessor:
         gain = min(self.gain, 30000 / max(peak, 1))
         if gain < self.gain:
             self.limited_frames += 1
-        return pcm(max(-32768, min(32767, round(x * gain))) for x in values)
+        output = pcm(max(-32768, min(32767, round(x * gain))) for x in values)
+        return self.enhancer.process(output) if self.enhancer else output
 
 
 def frame_stats(raw, filter_):
@@ -130,12 +132,27 @@ def save_profile(profile, path=DEFAULT_PATH):
         if os.path.exists(temporary): os.unlink(temporary)
 
 
+def enhance_processor(processor):
+    mode = os.getenv('SLAVIK_MIC_ENHANCEMENT', 'off')
+    if mode not in ('off', 'speex'):
+        raise RuntimeError('SLAVIK_MIC_ENHANCEMENT: off или speex.')
+    if mode == 'speex':
+        from audio_enhancement import SpeexEnhancer
+        try:
+            processor.enhancer = SpeexEnhancer()
+        except OSError:
+            raise RuntimeError('SpeexDSP не установлен. Выполните bash install-linux.sh или выберите --mic-enhancement off.') from None
+        agc = 'AGC до +12dB' if processor.enhancer.agc_enabled else 'AGC недоступен в этой сборке'
+        print(f'[Mic] SpeexDSP после AEC: шумодав -15dB, {agc}, кадр20ms.', flush=True)
+    return processor
+
+
 def load_processor(source):
     override = os.getenv('SLAVIK_MIC_GAIN')
     path = Path(os.getenv('SLAVIK_MIC_CALIBRATION', str(DEFAULT_PATH)))
     if not path.exists():
         print('[Mic] Нет калибровки: gain=1, high-pass=60Hz. Запустите --calibrate-mic.', flush=True)
-        return InputProcessor(float(override) if override else 1.0)
+        return enhance_processor(InputProcessor(float(override) if override else 1.0))
     try:
         profile = json.loads(path.read_text())
         if (profile['schema'], profile['source'], profile['rate']) != (SCHEMA, source, RATE) or type(profile['channel']) is not int or profile['channel'] not in (0, 1):
@@ -144,9 +161,9 @@ def load_processor(source):
         processor.channel = profile['channel']
     except (KeyError, ValueError, TypeError, OSError):
         print('[Mic] Профиль не подходит: gain=1. Повторите --calibrate-mic.', flush=True)
-        return InputProcessor(float(override) if override else 1.0)
+        return enhance_processor(InputProcessor(float(override) if override else 1.0))
     print(f"[Mic] channel={processor.channel}, gain={processor.gain:g}, SNR={profile.get('snr_db', '?')}dB, high-pass=60Hz", flush=True)
-    return processor
+    return enhance_processor(processor)
 
 
 class NearSpeech:

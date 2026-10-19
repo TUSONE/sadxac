@@ -142,6 +142,7 @@ def _serve(environment, store):
     pending = b''
     try:
         while True:
+            mode_changed = False
             ready, _, _ = select.select([sys.stdin], [], [], 1)
             if ready:
                 chunk = os.read(sys.stdin.fileno(), 4096)
@@ -154,11 +155,14 @@ def _serve(environment, store):
                         raise ValueError('Expected on/off/listen')
                     active = line != b'off'
                     listening = line == b'listen'
+                    mode_changed = True
                 if len(pending) > 16:
                     raise ValueError('Invalid duck command')
             streams = snapshot()
             playing = music_playing(streams, ducker.saved)
             ducker.update(streams, active, listening)
+            if mode_changed:
+                print('duck:' + ('listen' if listening else 'on' if active else 'off'), flush=True)
             print('music:on' if playing else 'music:off', flush=True)
     finally:
         ducker.update(snapshot(), False)

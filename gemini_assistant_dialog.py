@@ -10,7 +10,7 @@ import math
 import signal
 from difflib import SequenceMatcher
 from assistant_tools import KNOWLEDGE_DECLARATIONS, weather, web_search, tool_outcome
-from meme_lore import DECLARATION as LORE_DECLARATION, lookup_lore, lore_instruction
+from meme_lore import DECLARATION as LORE_DECLARATION, lookup_lore, lore_instruction, wants_short_meme
 from contextlib import AsyncExitStack, asynccontextmanager
 from mic_processing import load_processor
 from array import array
@@ -305,6 +305,8 @@ class WakeGate:
         self.wake_wait_until = 0.0
         self.music_active = False
         self.music_state_at = 0.0
+        self.command_music_until = 0.0
+        self.listen_acknowledged = False
         if self.followup_enabled and AWAKE_SECONDS <= 0:
             raise ValueError("SLAVIK_AWAKE_SECONDS must be positive")
         self.awake_until = 0.0
@@ -384,11 +386,14 @@ class WakeGate:
             self.wake_wait_until = now + 3 if self.music_playing and (wake_only(self.last_utterance) or wake_only(self.input_buf)) else 0
             if self.waiting_for_command:
                 self.command_authorized = False
+                self.listen_acknowledged = False
             self.input_buf = ""
             return was_asleep
         # Name authorizes fragments of this utterance, not the next utterance.
         self.command_authorized = self.input_authorized or self.waiting_for_command or (self.followup_enabled and self.awake)
         if self.command_authorized:
+            if self.waiting_for_command or self.command_music_until > now:
+                self.command_music_until = now + 30
             self.wake_wait_until = 0
             self.addressed = True
             self.duck_pending_until = now + 30
@@ -501,6 +506,9 @@ class PulseCapture:
 
     async def close(self):
         await stop_process(self.proc)
+        enhancer = getattr(self.processor, 'enhancer', None)
+        if enhancer:
+            enhancer.close()
 
 
 class PulsePlayer:
@@ -622,6 +630,15 @@ async def music_state_reader(proc, gate):
         while line := await proc.stdout.readline():
             if line in (b'music:on\n', b'music:off\n'):
                 gate.set_music_state(line == b'music:on\n')
+            elif line in (b'duck:listen\n', b'duck:on\n', b'duck:off\n'):
+                event_log('music_mode_applied', mode=line.decode().strip()[5:])
+                if (line == b'duck:listen\n' and gate.wake_wait_until > 0
+                        and not gate.command_authorized and not gate.listen_acknowledged):
+                    # Count the start window after Pulse has accepted silence,
+                    # rather than consuming it while the helper is still working.
+                    gate.wake_wait_until = max(gate.wake_wait_until, time.monotonic() + 3)
+                    gate.awake_until = max(gate.awake_until, gate.wake_wait_until)
+                    gate.listen_acknowledged = True
     finally:
         gate.set_music_state(False)
 
@@ -654,17 +671,20 @@ async def conversation_focus(gate, player, capture=None):
                 gate.close_when_drained = False
             elif busy:
                 gate.extend()
-            if not gate.response_allowed and not busy and not gate.waiting_for_command and not (gate.followup_enabled and gate.awake):
+            command_listening = gate.addressed and time.monotonic() < gate.command_music_until
+            if not gate.response_allowed and not busy and not gate.waiting_for_command and not command_listening and not (gate.followup_enabled and gate.awake):
                 gate.addressed = False
             active = gate.addressed and (gate.waiting_for_command or busy or (gate.response_allowed and time.monotonic() < gate.duck_pending_until))
             if proc and proc.returncode is not None:
                 print('[Audio] Приглушение недоступно: обновите аудиомост через bash install-linux.sh.', flush=True)
                 proc = None
-            mode = b'listen\n' if gate.waiting_for_command else (b'on\n' if active else b'off\n')
+            listening = gate.waiting_for_command or command_listening
+            mode = b'listen\n' if listening else (b'on\n' if active else b'off\n')
             if proc and mode != last_active:
                 try:
                     proc.stdin.write(mode)
                     await proc.stdin.drain()
+                    event_log('music_mode_requested', mode=mode.decode().strip())
                     last_active = mode
                 except (BrokenPipeError, ConnectionResetError):
                     await stop_process(proc)
@@ -684,10 +704,14 @@ async def conversation_focus(gate, player, capture=None):
                 await stop_process(proc)
 
 
-async def microphone_sender(session, capture: PulseCapture):
+async def microphone_sender(session, capture: PulseCapture, gate=None):
     from google.genai import types
+    from audio_enhancement import ListenActivity
+    activity = ListenActivity() if gate is not None else None
     while True:
         mono = await capture.read_mono()
+        if activity:
+            activity.feed(mono, gate)
         await session.send_realtime_input(
             audio=types.Blob(data=mono, mime_type=f"audio/pcm;rate={INPUT_RATE}")
         )
@@ -735,6 +759,7 @@ async def receiver(session, player, gate, tool_queue=None, verified_asr=False, e
                     else:
                         input_rejected = False
                         print(f"\nТы: {accepted}", flush=True)
+                        event_log('input_transcript', chars=len(accepted))
                         if gate.feed_transcript(accepted):
                             print("[Славик активирован]", flush=True)
                         if (gate.response_allowed or gate.waiting_for_command) and echo.playing(player):
@@ -769,16 +794,19 @@ async def receiver(session, player, gate, tool_queue=None, verified_asr=False, e
                         gate.music_finish_pending = gate.close_when_drained = False
                         gate.extend()
                         gate.command_authorized = True
+                        if gate.waiting_for_command and (call.args or {}).get('command_present') is True:
+                            gate.command_music_until = time.monotonic() + 30
                         gate.wake_wait_until = (time.monotonic() + 3
                             if (call.args or {}).get('command_present') is False and gate.music_playing else 0)
                         if gate.waiting_for_command:
                             gate.command_authorized = False
+                            gate.listen_acknowledged = False
                         print("[Славик активирован по аудио]", flush=True)
                 for call in calls:
                     event_log("tool_received", tool=call.name, id=call.id, authorized=gate.response_allowed,
                               action=(call.args or {}).get("action"), query=(call.args or {}).get("query"))
                     tool_queue.put_nowait((call, gate.response_allowed, gate.last_utterance)
-                                          if call.name in ("audio_volume", "voice_volume") else (call, gate.response_allowed))
+                                          if call.name in ("audio_volume", "voice_volume", "meme_lore") else (call, gate.response_allowed))
             # Freeze the gate for each model turn. Never release old hidden audio
             # after a later wake word, and never truncate an authorized long reply.
             if not interrupted:
@@ -799,6 +827,7 @@ async def receiver(session, player, gate, tool_queue=None, verified_asr=False, e
                     if audible_turn is None:
                         audible_turn = gate.response_allowed
                         if audible_turn:
+                            gate.command_music_until = 0
                             gate.reply_started = True
                             gate.reply_played = True
                             gate.reply_generation_done = False
@@ -858,7 +887,10 @@ async def tool_worker(session, queue, spotify, player=None, gate=None):
             elif call.name == "web_search":
                 result = await web_search(dict(call.args or {}))
             elif call.name == "meme_lore":
-                result = lookup_lore(dict(call.args or {}))
+                args = dict(call.args or {})
+                if wants_short_meme(utterance or ''):
+                    args['mode'] = 'joke'
+                result = lookup_lore(args)
             elif call.name != "spotify_command" or spotify is None:
                 result = "Неизвестный инструмент."
             else:
@@ -950,7 +982,7 @@ async def run():
                     tg.create_task(microphone_pipeline(session, capture, player, gate, asr_queue, send_lock))
                     tg.create_task(recognition_worker(client, session, asr_queue, gate, player, echo, send_lock))
                 else:
-                    tg.create_task(microphone_sender(session, capture))
+                    tg.create_task(microphone_sender(session, capture, gate))
                 tg.create_task(receiver(session, player, gate, tool_queue, use_asr, echo))
                 tg.create_task(tool_worker(session, tool_queue, spotify, player, gate))
                 tg.create_task(player.run())
@@ -1314,6 +1346,8 @@ def main():
     parser.add_argument('--followup-seconds', type=float, default=None, help='Окно продолжения после ответа; по умолчанию3s, 0 — только с именем')
     parser.add_argument('--asr-engine', choices=('live', 'gemini'),
                         help='live: прямой Flash Live; gemini: отдельный экспериментальный ASR')
+    parser.add_argument('--mic-enhancement', choices=('off', 'speex'),
+                        help='Опытный шумодав/AGC после AEC; off для сравнения без него')
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--asr-test", action="store_true")
     modes.add_argument("--weather", nargs="?", const="", metavar="CITY")
@@ -1329,6 +1363,8 @@ def main():
     modes.add_argument("--spotify-previous", action="store_true")
     modes.add_argument("--spotify-playlist-track", type=int, metavar="NUMBER")
     args = parser.parse_args()
+    if args.mic_enhancement is not None:
+        os.environ['SLAVIK_MIC_ENHANCEMENT'] = args.mic_enhancement
     if args.followup_seconds is not None:
         if not math.isfinite(args.followup_seconds) or not 0 <= args.followup_seconds <= 30:
             parser.error('--followup-seconds: допустимо0..30')

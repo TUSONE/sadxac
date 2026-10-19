@@ -10,6 +10,22 @@ import gemini_assistant_dialog as agent
 
 
 class LoreTests(unittest.TestCase):
+    def test_short_meme_request_returns_only_one_joke_without_lore(self):
+        previous = None
+        for query in ('выдай мемчик', 'Славик кинь прикол', 'дай какой-нибудь мем'):
+            result = lore.lookup_lore({'query': query})
+            self.assertIn(result['spoken_response'], lore.JOKES)
+            self.assertNotEqual(result['spoken_response'], previous)
+            self.assertLess(len(result['spoken_response']), 150)
+            self.assertNotIn('overview', result)
+            self.assertNotIn('entries', result)
+            previous = result['spoken_response']
+
+    def test_explanation_question_still_returns_lore(self):
+        for query in ('Объясни мем Мама-птица', 'Расскажи про мем Мама-птица', 'Кто придумал мемчик Мама-птица?'):
+            result = lore.lookup_lore({'query': query})
+            self.assertIn('entries', result)
+            self.assertNotIn('spoken_response', result)
     def test_provided_cast_settings_and_gaps_are_retrievable(self):
         cases = [('маму-птицу', 'mother_bird', 'птенц'),
                  ('Фог', 'fog', 'преслед'), ('Друн', 'ch_drun', 'спутник'),
@@ -59,6 +75,17 @@ class LoreTests(unittest.TestCase):
 
 
 class LoreToolTests(unittest.IsolatedAsyncioTestCase):
+    async def test_actual_meme_request_overrides_wrong_model_lore_mode(self):
+        queue = asyncio.Queue()
+        queue.put_nowait((NS(name='meme_lore', id='joke', args={'query': 'обзор', 'mode': 'lore'}), True, 'Славик, выдай мемчик'))
+        session = NS(send_tool_response=AsyncMock())
+        worker = asyncio.create_task(agent.tool_worker(session, queue, None, gate=agent.WakeGate()))
+        await asyncio.wait_for(queue.join(), 1)
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+        result = session.send_tool_response.call_args.kwargs['function_responses'][0].response
+        self.assertEqual(result['kind'], 'original_joke')
+        self.assertNotIn('overview', result)
     async def test_local_lore_is_authorized_and_never_bypasses_sleep_gate(self):
         for authorized in (False, True):
             queue = asyncio.Queue()
