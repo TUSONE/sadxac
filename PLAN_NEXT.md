@@ -1,5 +1,18 @@
 # Славик: план стабилизации и передача следующей модели
 
+## Актуально: пользователь вернул прямой Flash Live из-за задержки ASR
+
+Отдельный ASR в одном тесте вернул пустой текст, в другом правильно «Славик, включи
+Кизару». Музыка не включилась, поскольку --asr-test никогда не выполняет команды.
+Пользователь прямо запросил Flash Live для нормальной скорости. DefaultSLAVIK_ASR
+теперьlive. НоваяCLIопция --asr-engine live перебивает дажестарый .envgemini; no extra
+modelcatalog/preflight/generate_content в обычном пути. Live3.1, capture16k/right(or
+profile-selected), output48k/stereo иSpotify не менялись. NO_INTERRUPTION/strictgate,
+echofilter, duck12dB иoutput100сохранены. Отдельный ASR остаётся opt-inдиагностикой.
+115 локальныхтестов включая default Live иCLIприоритетнад.env. Приёмка на плате:
+обычный --asr-engine live, аНЕ--asr-test; проверитьSpotifyиlatency, не обещатьидеальный
+ASR/AEC без данных. Обновлениеgitpull, reinstallненужен.
+
 ## Последний лог: preflight проходит, реальная фраза получает503
 
 Пользователь показал preflight3.7 после3.8/503 и затем повторный503 при реальном

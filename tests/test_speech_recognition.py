@@ -238,3 +238,23 @@ class RecognitionTests(unittest.IsolatedAsyncioTestCase):
             await speech.transcribe_with_failover(client, b'pcm')
         self.assertIs(raised.exception, error)
         self.assertEqual(client.aio.models.generate_content.await_count, 1)
+
+    async def test_default_uses_direct_flash_live_with_automatic_input_and_no_extra_asr(self):
+        with patch.dict(agent.os.environ, {}, clear=True):
+            self.assertFalse(agent.independent_asr())
+            config = agent.make_config().model_dump(exclude_none=True)
+        self.assertFalse(config['realtime_input_config']['automatic_activity_detection']['disabled'])
+        self.assertEqual(config['realtime_input_config']['activity_handling'], 'NO_INTERRUPTION')
+        self.assertIn('input_audio_transcription', config)
+
+
+class EngineCLITests(unittest.TestCase):
+    def test_cli_live_choice_overrides_env_loaded_by_launcher(self):
+        async def capture(args):
+            self.assertEqual(args.asr_engine, 'live')
+            self.assertFalse(agent.independent_asr())
+        with patch.dict(agent.os.environ, {'SLAVIK_ASR': 'gemini'}), \
+             patch.object(agent.sys, 'argv', ['gemini_assistant_dialog.py', '--asr-engine', 'live']), \
+             patch.object(agent, 'entry', side_effect=capture) as entry:
+            agent.main()
+            entry.assert_called_once()

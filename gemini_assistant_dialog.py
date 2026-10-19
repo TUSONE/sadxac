@@ -63,7 +63,7 @@ SYSTEM_PROMPT = os.getenv(
 
 
 def independent_asr():
-    mode = os.getenv('SLAVIK_ASR', 'gemini')
+    mode = os.getenv('SLAVIK_ASR', 'live')
     if mode not in ('gemini', 'live'):
         raise RuntimeError('SLAVIK_ASR должен быть gemini или live.')
     return mode == 'gemini'
@@ -1137,6 +1137,8 @@ async def entry(args):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--asr-engine', choices=('live', 'gemini'),
+                        help='live: прямой Flash Live; gemini: отдельный экспериментальный ASR')
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--asr-test", action="store_true")
     modes.add_argument("--weather", nargs="?", const="", metavar="CITY")
@@ -1152,6 +1154,9 @@ def main():
     modes.add_argument("--spotify-previous", action="store_true")
     modes.add_argument("--spotify-playlist-track", type=int, metavar="NUMBER")
     args = parser.parse_args()
+    if args.asr_engine:
+        # The launcher loads .env first; an explicit CLI choice takes precedence.
+        os.environ['SLAVIK_ASR'] = args.asr_engine
     try:
         asyncio.run(entry(args))
     except (KeyboardInterrupt, asyncio.CancelledError):
