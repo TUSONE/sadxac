@@ -16,6 +16,10 @@ RATE = 16000
 FRAME_BYTES = 640  # 20ms mono PCM16
 
 
+class ASRUnavailable(RuntimeError):
+    """Safe, application-authored error text; never includes API response bodies."""
+
+
 class SpeechSegmenter:
     def __init__(self, vad=None):
         if vad is None:
@@ -106,6 +110,23 @@ def temporary_asr_error(error):
     return getattr(error, 'code', None) in (500, 502, 503, 504) or isinstance(error, TimeoutError)
 
 
+async def model_catalog(client):
+    async def collect():
+        result = []
+        async for model in await client.aio.models.list():
+            result.append(model)
+            if len(result) >= 200:
+                break
+        return result
+    try:
+        models = await asyncio.wait_for(collect(), 15)
+    except Exception as error:
+        raise RuntimeError(f'Не удалось получить каталог Gemini для ASR; код={getattr(error, "code", "—")}. '                           'Можно указать доступную audio-модель в SLAVIK_ASR_MODEL.') from None
+    candidates = candidate_models(models)
+    client._slavik_asr_candidates = candidates
+    return candidates
+
+
 async def prepare_recognizer(client):
     try:
         return await asyncio.wait_for(_prepare_recognizer(client), 60)
@@ -129,18 +150,7 @@ async def _prepare_recognizer(client):
             if getattr(error, 'code', None) != 404 and not temporary_asr_error(error):
                 raise RuntimeError(f'Проверка ASR {explicit} не прошла; код={getattr(error, "code", "—")}.') from None
             print(f'[ASR] {explicit} недоступна; код={getattr(error, "code", "таймаут")}. Ищу другую модель в каталоге API.', flush=True)
-    async def collect():
-        result = []
-        async for model in await client.aio.models.list():
-            result.append(model)
-            if len(result) >= 200:
-                break
-        return result
-    try:
-        models = await asyncio.wait_for(collect(), 15)
-    except Exception as error:
-        raise RuntimeError(f'Не удалось получить каталог Gemini для ASR; код={getattr(error, "code", "—")}. '                           'Можно указать доступную audio-модель в SLAVIK_ASR_MODEL.') from None
-    candidates = candidate_models(models)
+    candidates = await model_catalog(client)
     tried = []
     for name in candidates[:5]:
         if name.removeprefix('models/') == explicit.removeprefix('models/'):
@@ -193,6 +203,39 @@ async def transcribe(client, pcm, model=None):
     return '' if data['language'] == 'none' else text.strip()
 
 
+async def transcribe_with_failover(client, pcm):
+    """Keep the same utterance in memory when a healthy-at-start model fails."""
+    try:
+        return await asyncio.wait_for(_transcribe_with_failover(client, pcm), 60)
+    except asyncio.TimeoutError:
+        raise ASRUnavailable('ASR не ответил за60s. Фраза не отправлена на выполнение; повторите её позже.') from None
+
+
+async def _transcribe_with_failover(client, pcm):
+    current = getattr(client, '_slavik_asr_model', None) or os.getenv('SLAVIK_ASR_MODEL')
+    try:
+        return await transcribe(client, pcm)
+    except Exception as error:
+        if not temporary_asr_error(error) and getattr(error, 'code', None) != 404:
+            raise
+    candidates = getattr(client, '_slavik_asr_candidates', None)
+    if candidates is None:
+        candidates = await model_catalog(client)
+    alternatives = [m for m in candidates if m.removeprefix('models/') != (current or '').removeprefix('models/')]
+    for model in alternatives[:2]:
+        print(f'[ASR] Переношу ту же фразу на {model}; повторять её не нужно.', flush=True)
+        try:
+            text = await transcribe(client, pcm, model=model)
+        except Exception as error:
+            if temporary_asr_error(error) or getattr(error, 'code', None) == 404 or isinstance(error, ValueError):
+                continue
+            raise
+        client._slavik_asr_model = model
+        print(f'[ASR] Распознавание выполнено: {model}', flush=True)
+        return text
+    raise ASRUnavailable('Сервис ASR недоступен на выбранной и резервных моделях. '                       'Команда не выполнялась; повторите фразу позже.')
+
+
 def player_busy(player):
     return not player.queue.empty() or time.monotonic() < player.audio_until + .2
 
@@ -227,11 +270,12 @@ async def recognition_worker(client, session, queue, gate, player, echo, send_lo
             if gate.asr_pending or player_busy(player):
                 continue
             try:
-                text = await transcribe(client, pcm)
+                text = await transcribe_with_failover(client, pcm)
             except Exception as error:
-                if getattr(error, 'code', None) == 404:
-                    raise RuntimeError('Проверенная ASR-модель стала недоступна (404). Перезапустите Славика для нового выбора модели.') from None
-                print(f'[ASR] Ошибка {type(error).__name__}; код={getattr(error, "code", "—")}. Проверьте SLAVIK_ASR_MODEL и лимиты API.', flush=True)
+                if isinstance(error, ASRUnavailable):
+                    print(f'[ASR] {error}', flush=True)
+                else:
+                    print(f'[ASR] Ошибка {type(error).__name__}; код={getattr(error, "code", "—")}. Проверьте доступ и лимиты ASR API.', flush=True)
                 continue
             if not text or player_busy(player):
                 continue

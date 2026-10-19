@@ -198,3 +198,43 @@ class RecognitionTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(speech, '_prepare_recognizer', side_effect=TimeoutError):
             with self.assertRaisesRegex(RuntimeError, '60s'):
                 await speech.prepare_recognizer(None)
+
+    async def test_real_audio_503_failover_preserves_utterance_and_caches_success(self):
+        error = Exception('private response')
+        error.code = 503
+        generate = AsyncMock(side_effect=[error, error, NS(text='{"text":"Славка включи kizaru", "language":"ru"}')])
+        client = NS(_slavik_asr_model='models/gemini-4-flash',
+                    _slavik_asr_candidates=['models/gemini-4-flash', 'models/gemini-3-flash'],
+                    aio=NS(models=NS(generate_content=generate)))
+        pcm = struct.pack('<h', 1234) * 16000
+        with patch.object(speech.asyncio, 'sleep', new=AsyncMock()):
+            text = await speech.transcribe_with_failover(client, pcm)
+        self.assertEqual(text, 'Славка включи kizaru')
+        self.assertEqual(client._slavik_asr_model, 'models/gemini-3-flash')
+        self.assertEqual([c.kwargs['model'] for c in generate.call_args_list],
+                         ['models/gemini-4-flash', 'models/gemini-4-flash', 'models/gemini-3-flash'])
+        blobs = [c.kwargs['contents'].parts[0].inline_data.data for c in generate.call_args_list]
+        self.assertEqual(blobs, [speech.wav_bytes(pcm)] * 3)
+
+    async def test_real_audio_failover_is_bounded_and_does_not_invent_address(self):
+        error = Exception()
+        error.code = 503
+        client = NS(_slavik_asr_model='models/gemini-4-flash',
+                    _slavik_asr_candidates=['models/gemini-4-flash', 'models/gemini-3-flash', 'models/gemini-2-flash'],
+                    aio=NS(models=NS(generate_content=AsyncMock(side_effect=error))))
+        with patch.object(speech.asyncio, 'sleep', new=AsyncMock()), self.assertRaises(speech.ASRUnavailable):
+            await speech.transcribe_with_failover(client, b'pcm')
+        self.assertEqual(client.aio.models.generate_content.await_count, 6)
+        client.aio.models.generate_content = AsyncMock(return_value=NS(text='{"text":"Привет включи kizaru", "language":"ru"}'))
+        self.assertEqual(await speech.transcribe_with_failover(client, b'pcm'), 'Привет включи kizaru')
+
+    async def test_real_audio_forbidden_does_not_use_alternate_models(self):
+        error = Exception()
+        error.code = 403
+        client = NS(_slavik_asr_model='models/gemini-4-flash',
+                    _slavik_asr_candidates=['models/gemini-3-flash'],
+                    aio=NS(models=NS(generate_content=AsyncMock(side_effect=error))))
+        with self.assertRaises(Exception) as raised:
+            await speech.transcribe_with_failover(client, b'pcm')
+        self.assertIs(raised.exception, error)
+        self.assertEqual(client.aio.models.generate_content.await_count, 1)

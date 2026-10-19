@@ -1077,7 +1077,7 @@ async def entry(args):
     try:
         if args.asr_test:
             from google import genai
-            from speech_recognition import SpeechSegmenter, transcribe, prepare_recognizer
+            from speech_recognition import SpeechSegmenter, transcribe_with_failover, prepare_recognizer
             capture = PulseCapture()
             client = genai.Client(api_key=require_api_key())
             try:
@@ -1089,7 +1089,7 @@ async def entry(args):
                 while time.monotonic() < deadline:
                     segments = segmenter.feed(await asyncio.wait_for(capture.read_mono(), 3))
                     if segments:
-                        text = await transcribe(client, segments[0])
+                        text = await transcribe_with_failover(client, segments[0])
                         print('[ASR-тест] ' + (text or 'Понятная RU/EN речь не найдена.'), flush=True)
                         break
                 else:
@@ -1161,7 +1161,7 @@ def main():
             if isinstance(exc, BaseExceptionGroup):
                 for child in exc.exceptions:
                     report(child)
-            elif type(exc) is RuntimeError or (type(exc).__module__ == "spotify_api" and type(exc).__name__ == "SpotifyError"):
+            elif type(exc) is RuntimeError or (type(exc).__module__ == "speech_recognition" and type(exc).__name__ == "ASRUnavailable") or (type(exc).__module__ == "spotify_api" and type(exc).__name__ == "SpotifyError"):
                 print(f"Ошибка: {exc}", file=sys.stderr)
             else:
                 print(f"Ошибка: {type(exc).__name__}; код={getattr(exc, 'code', '—')}. "

@@ -1,3 +1,5 @@
+Real-utterance ASR failover: 113 unittest tests passed. Same PCM/WAV reused on temporary failures or404, at most two alternate catalog models,60s budget, successful model cached,403 no reroute and no invented wake name. Actual Google availability and recognition in music unverified; user confirmed latest sample had no music.
+
 ASR503 handling: 110 unittest tests passed, including one retry of identical audio, overloaded-model fallback and overall preflight deadline. Google service availability on user account remains unverified. Dependencies reinstalled from requirements in refreshed cloud workspace.
 
 ASR404 correction: 107 unittest checks passed. Model catalog/action filter, WAV/JSON preflight, stale override404 fallback, 403/429 no-switch and no valid candidate failure covered. Actual account catalog/model permissions remain untested (cloud key absent).
