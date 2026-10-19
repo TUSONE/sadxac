@@ -1,3 +1,5 @@
+Dialogue/info/playback update: 128 unit tests cover audible-end3s window, short clarification, addressed barge-in with preserved queued request, >10s PCM and bounded backpressure, TashkentUZ/direct country selection, RSS headlines/dates/sources and search model404 fallback. RSS live check blocked by cloud proxy; Gemini key absent. Actual board acoustics, source access and latency unverified.
+
 Direct Flash Live restored: 115 unittest tests passed. Default uses native Live input/ASR without independent-ASR preflight; CLI --asr-engine live overrides launcher .env. No new dependencies, hardware/output or Spotify backend changes. Acoustic and latency acceptance pending on board. --asr-test remains non-executing diagnostics.
 
 Real-utterance ASR failover: 113 unittest tests passed. Same PCM/WAV reused on temporary failures or404, at most two alternate catalog models,60s budget, successful model cached,403 no reroute and no invented wake name. Actual Google availability and recognition in music unverified; user confirmed latest sample had no music.

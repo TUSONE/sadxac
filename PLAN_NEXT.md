@@ -1,5 +1,24 @@
 # Славик: план стабилизации и передача следующей модели
 
+## Последний запрос:3s продолжение, имена, новости/погода, переполнение
+
+Плата показала: needs_input погоды на «Ташкент» из-за имён в разных странах;
+ответ «в Узбекистане» отвергнут строгим gate; новости падают на старой фиксированной
+search2.5Flash; теорема приводит кPlaybackqueueoverflow. Реализовано:
+- defaultLive, окно3s послеaudible-end, без старыхenv5s/strict0; CLIoverride.
+- расширенные алиасы +фонетика; audio wake defaulton только при допустимом контексте.
+- имя во времяозвучки flush-ит её осознанно, старыйgenerationmute, новыйrequest
+  сохранён доoldturncomplete; серверныйinterrupted неflush. Микрофон невыключается.
+- PCMqueue120s bounded23MB, await backpressure вместоcrash, мелкие конвертации/yield.
+  Это не увеличение аппаратногоquantum; больше120s может задержать receive.
+- defaultТашкентUZ безgeocoderambiguity; явнаяcountryнеигнорируется.
+- newsRSS GoogleNews соsources/dates; fallbackgroundedSearch икаталог моделей вместо
+  hardcoded2.5. НаstartrawLiveникаких extraAPI. RSSlivecheckвоблакеproxyerror,
+  реальныйsearchнепроверенбезключа. Необъявлятьновостинаплатепроверенными.
+128 локальныхтестов; CURRENT_BEHAVIOR.md переписан подфинальное поведение.
+Обновлениеgitpull, обычный --asr-engine live --followup-seconds3; reinstallненужен.
+Требуетсяаппаратнаяприёмка. МаксимальнаягромкостьAECостаётсянеподтверждённой.
+
 ## Актуально: пользователь вернул прямой Flash Live из-за задержки ASR
 
 Отдельный ASR в одном тесте вернул пустой текст, в другом правильно «Славик, включи

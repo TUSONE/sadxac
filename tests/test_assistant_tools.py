@@ -25,10 +25,10 @@ class OutcomeTests(unittest.TestCase):
         with patch.dict(os.environ, {'SLAVIK_CITY': ''}, clear=True), patch.object(tools, 'get_json') as fetch:
             self.assertEqual(tools.weather({})['status'], 'needs_input')
             fetch.assert_not_called()
-        with patch.object(tools, 'get_json', side_effect=[{'results': [{'name': 'Ташкент', 'latitude': 41, 'longitude': 69}]},
+        with patch.object(tools, 'get_json', side_effect=[{'results': [{'name': 'Москва', 'latitude': 55, 'longitude': 37}]},
                 {'timezone': 'Asia/Tashkent', 'current': {'time': '2026-10-12T13:00', 'temperature_2m': 20},
                  'daily': {'time': ['today', 'tomorrow'], 'temperature_2m_max': [21, 22]}}]):
-            result = tools.weather({'city': 'Ташкент', 'day': 1})
+            result = tools.weather({'city': 'Москва', 'day': 1})
         self.assertEqual(result['status'], 'confirmed')
         self.assertEqual(result['forecast']['temperature_2m_max'], 22)
         self.assertIsNone(result['current'])
@@ -39,7 +39,11 @@ class OutcomeTests(unittest.TestCase):
         for args, expected in [({}, 'Ташкент'), ({'city': 'Москва'}, 'Москва')]:
             with patch.dict(os.environ, {}, clear=True), patch.object(tools, 'get_json', return_value={'results': []}) as fetch:
                 tools.weather(args)
-            self.assertEqual(fetch.call_args.args[1]['name'], expected)
+            if expected == 'Ташкент':
+                self.assertEqual(fetch.call_args.args[1]['latitude'], 41.3111)
+                self.assertEqual(fetch.call_count, 1)
+            else:
+                self.assertEqual(fetch.call_args.args[1]['name'], expected)
 
     def test_curated_queue_validates_both_artist_and_title_and_deduplicates(self):
         results = {'tracks': {'items': [
@@ -69,7 +73,7 @@ class OutcomeTests(unittest.TestCase):
     def test_new_wake_names_and_close_pronunciation(self):
         for text in ('Слава', 'Славчуха', 'Как дела, Славуха?', 'Слайвик привет', 'Славика включи музыку', 'Свавик поставь паузу'):
             self.assertTrue(agent.contains_wake(text), text)
-        for text in ('Слова этой песни', 'Валик привет', 'Слайды покажи', 'славиковский'):
+        for text in ('Слова этой песни', 'кубик привет', 'Слайды покажи', 'славиковский'):
             self.assertFalse(agent.contains_wake(text), text)
 
     def test_channel_selection_uses_snr_not_louder_music(self):
@@ -131,7 +135,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
             grounding_chunks=[NS(web=NS(uri='https://example.com/fact', title='Fact'))]))])
         for response, expected in [(grounded, 'confirmed'), (NS(text='Догадка', candidates=[]), 'unknown')]:
             client = NS(aio=NS(models=NS(generate_content=AsyncMock(return_value=response)), aclose=AsyncMock()))
-            with patch.object(genai, 'Client', return_value=client):
+            with patch.object(genai, 'Client', return_value=client), patch.dict(os.environ, {'SLAVIK_SEARCH_MODEL': 'gemini-test-flash'}):
                 result = await tools.web_search({'query': 'свежий факт'})
             self.assertEqual(result['status'], expected)
             client.aio.aclose.assert_awaited_once()
@@ -176,7 +180,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(gate.awake)
             self.assertFalse(gate.response_allowed)
         player.audio_until = 0
-        with patch.object(agent.time, 'monotonic', return_value=103):
+        with patch.object(agent.time, 'monotonic', return_value=102):
             self.assertEqual(guard.accept('Как дела?', player), 'Как дела?')
             gate.feed_transcript('Как дела?')
             self.assertTrue(gate.response_allowed)

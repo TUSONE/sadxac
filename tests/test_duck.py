@@ -56,10 +56,10 @@ class DuckTests(unittest.TestCase):
         d.update([stream(binary='slavik-librespot')], True)
         self.assertEqual(len(calls), 1)
 
-    def test_observed_wake_variant_requires_command_context(self):
-        for text in ('Слайк, привет', 'Слайка, включи Кизару', 'Громкость десять, Слайк'):
+    def test_broader_wake_variants_and_ordinary_words(self):
+        for text in ('Слайк, привет', 'Слайка, включи Кизару', 'Громкость десять, Слайк', 'Слайк', 'Валик включи'):
             self.assertTrue(agent.contains_wake(text))
-        for text in ('Слайды сделай погромче', 'Валик включи', 'Слайк', 'рассказываю про слайка'):
+        for text in ('Слайды сделай погромче', 'обычная беседа о музыке'):
             self.assertFalse(agent.contains_wake(text))
 
 
@@ -74,8 +74,8 @@ class FocusTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(gate.awake)
 
 
-    async def test_music_confirmation_closes_only_after_audio_drains(self):
-        gate = agent.WakeGate()
+    async def test_optional_strict_music_confirmation_closes_after_audio_drains(self):
+        gate = agent.WakeGate(followup_enabled=False)
         gate.feed_transcript('Славик включи музыку')
         gate.music_finish_pending = True
         gate.complete_turn()

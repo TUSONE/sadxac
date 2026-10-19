@@ -159,7 +159,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             gate = a.WakeGate(wake_enabled=True, followup_enabled=True)
             player = FakePlayer()
             queue = asyncio.Queue()
-            event = message(input_transcription=NS(text='Валик давай другой трек'))
+            event = message(input_transcription=NS(text='Давай другой трек'))
             event.tool_call = NS(function_calls=[
                 NS(name='spotify_command', id='music', args={'action': 'next'}),
                 NS(name='wake_assistant', id='wake', args={'addressed': addressed})])
@@ -205,7 +205,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         gate = a.WakeGate(wake_enabled=True, followup_enabled=True)
         player = FakePlayer()
         queue = asyncio.Queue()
-        event = message(input_transcription=NS(text='Валик давай другой трек'))
+        event = message(input_transcription=NS(text='Давай другой трек'))
         event.tool_call = NS(function_calls=[NS(name='spotify_command', id='music', args={'action': 'next'})])
         with self.assertRaises(RuntimeError):
             await a.receiver(FakeSession([[event, message(b'answer', turn_complete=True)]]), player, gate, queue)
@@ -346,7 +346,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             def terminate(self): self.returncode = -15; drained.set()
             async def wait(self): return self.returncode
         player.proc = Proc()
-        player.enqueue(struct.pack('<hh', 1000, -1000))
+        await player.enqueue(struct.pack('<hh', 1000, -1000))
         writer = asyncio.create_task(player.run())
         await asyncio.sleep(0)
         await asyncio.wait_for(player.flush(), .2)

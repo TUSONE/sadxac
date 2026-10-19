@@ -54,7 +54,7 @@ export MAKEFLAGS=-j1
 mkdir -p "$HOME/.config/slavik"
 chmod 700 "$HOME/.config/slavik"
 if [[ ! -e "$HOME/.config/slavik/.env" ]]; then
-    printf '%s\n' '# GEMINI_API_KEY=enter-key-here' 'GEMINI_MODEL=gemini-3.1-flash-live-preview' 'GEMINI_VOICE=Kore' 'SLAVIK_AWAKE_SECONDS=5' > "$HOME/.config/slavik/.env"
+    printf '%s\n' '# GEMINI_API_KEY=enter-key-here' 'GEMINI_MODEL=gemini-3.1-flash-live-preview' 'GEMINI_VOICE=Kore' 'SLAVIK_FOLLOWUP_SECONDS=3' > "$HOME/.config/slavik/.env"
 fi
 chmod 600 "$HOME/.config/slavik/.env"
 chmod 700 start-gemini-assistant.sh
