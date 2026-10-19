@@ -168,3 +168,33 @@ class RecognitionTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(agent.os.environ, {'SLAVIK_ASR_MODEL': ''}), self.assertRaisesRegex(RuntimeError, 'Нет проверенной модели'):
             await speech.prepare_recognizer(client)
         self.assertFalse(hasattr(client, '_slavik_asr_model'))
+
+    async def test_transient_503_retries_same_audio_once(self):
+        error = Exception('private error body')
+        error.code = 503
+        generate = AsyncMock(side_effect=[error, NS(text='{"text":"Славик привет", "language":"ru"}')])
+        client = NS(_slavik_asr_model='models/gemini-4-flash', aio=NS(models=NS(generate_content=generate)))
+        with patch.object(speech.asyncio, 'sleep', new=AsyncMock()) as delay:
+            self.assertEqual(await speech.transcribe(client, b'pcm'), 'Славик привет')
+        self.assertEqual(generate.await_count, 2)
+        delay.assert_awaited_once_with(1)
+        self.assertEqual(generate.call_args_list[0], generate.call_args_list[1])
+
+    async def test_persistently_overloaded_candidate_falls_back_to_next_catalog_model(self):
+        error = Exception('private error body')
+        error.code = 503
+        async def pager():
+            for name in ['models/gemini-4-flash', 'models/gemini-3-flash']:
+                yield NS(name=name, supported_actions=['generateContent'])
+        generate = AsyncMock(side_effect=[error, error, NS(text='{"text":"", "language":"none"}')])
+        client = NS(aio=NS(models=NS(generate_content=generate, list=AsyncMock(return_value=pager()))))
+        with patch.dict(agent.os.environ, {'SLAVIK_ASR_MODEL': ''}), patch.object(speech.asyncio, 'sleep', new=AsyncMock()):
+            selected = await speech.prepare_recognizer(client)
+        self.assertEqual(selected, 'models/gemini-3-flash')
+        self.assertEqual([c.kwargs['model'] for c in generate.call_args_list],
+                         ['models/gemini-4-flash', 'models/gemini-4-flash', 'models/gemini-3-flash'])
+
+    async def test_preflight_has_overall_time_budget(self):
+        with patch.object(speech, '_prepare_recognizer', side_effect=TimeoutError):
+            with self.assertRaisesRegex(RuntimeError, '60s'):
+                await speech.prepare_recognizer(None)

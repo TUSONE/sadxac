@@ -102,7 +102,18 @@ def candidate_models(models):
     return sorted(set(candidates), key=rank)
 
 
+def temporary_asr_error(error):
+    return getattr(error, 'code', None) in (500, 502, 503, 504) or isinstance(error, TimeoutError)
+
+
 async def prepare_recognizer(client):
+    try:
+        return await asyncio.wait_for(_prepare_recognizer(client), 60)
+    except asyncio.TimeoutError:
+        raise RuntimeError('Проверка ASR превысила60s: сервис временно недоступен. Повторите запуск позже.') from None
+
+
+async def _prepare_recognizer(client):
     explicit = os.getenv('SLAVIK_ASR_MODEL', '').strip()
     if explicit and not re.fullmatch(r'(?:models/)?gemini-[a-zA-Z0-9_.-]+', explicit):
         raise RuntimeError('Некорректное имя SLAVIK_ASR_MODEL.')
@@ -115,9 +126,9 @@ async def prepare_recognizer(client):
         try:
             return await probe(explicit)
         except Exception as error:
-            if getattr(error, 'code', None) != 404:
+            if getattr(error, 'code', None) != 404 and not temporary_asr_error(error):
                 raise RuntimeError(f'Проверка ASR {explicit} не прошла; код={getattr(error, "code", "—")}.') from None
-            print(f'[ASR] {explicit} недоступна (404); ищу модель в каталоге API.', flush=True)
+            print(f'[ASR] {explicit} недоступна; код={getattr(error, "code", "таймаут")}. Ищу другую модель в каталоге API.', flush=True)
     async def collect():
         result = []
         async for model in await client.aio.models.list():
@@ -139,9 +150,10 @@ async def prepare_recognizer(client):
             return await probe(name)
         except Exception as error:
             code = getattr(error, 'code', None)
-            if code == 404 or isinstance(error, ValueError):
+            if code == 404 or isinstance(error, ValueError) or temporary_asr_error(error):
+                print(f'[ASR] {name}: проверка не прошла, код={code or "таймаут/формат"}; проверяю следующую модель.', flush=True)
                 continue
-            # Do not route around permissions, quota, or a network outage.
+            # Permissions and quota are not transient model overload.
             raise RuntimeError(f'Проверка модели ASR {name} не прошла; код={code or "—"}. '                               'Проверьте доступ и лимиты API.') from None
     raise RuntimeError('Нет проверенной модели для отдельного ASR. Кандидаты: ' +
                        (', '.join(tried) or 'каталог не содержит Flash с generateContent') +
@@ -153,17 +165,25 @@ async def transcribe(client, pcm, model=None):
     model = model or getattr(client, '_slavik_asr_model', None) or os.getenv('SLAVIK_ASR_MODEL')
     if not model:
         raise RuntimeError('ASR модель не проверена перед запуском.')
-    response = await asyncio.wait_for(client.aio.models.generate_content(
-        model=model,
-        contents=types.Content(role='user', parts=[types.Part.from_bytes(
-            data=wav_bytes(pcm), mime_type='audio/wav')]),
-        config=types.GenerateContentConfig(
-            system_instruction=ASR_PROMPT, temperature=0,
-            response_mime_type='application/json', response_schema={
-                'type': 'OBJECT', 'properties': {
-                    'text': {'type': 'STRING'},
-                    'language': {'type': 'STRING', 'enum': ['ru', 'en', 'none']}},
-                'required': ['text', 'language']})), 15)
+    for attempt in range(2):
+        try:
+            response = await asyncio.wait_for(client.aio.models.generate_content(
+                model=model,
+                contents=types.Content(role='user', parts=[types.Part.from_bytes(
+                    data=wav_bytes(pcm), mime_type='audio/wav')]),
+                config=types.GenerateContentConfig(
+                    system_instruction=ASR_PROMPT, temperature=0,
+                    response_mime_type='application/json', response_schema={
+                        'type': 'OBJECT', 'properties': {
+                            'text': {'type': 'STRING'},
+                            'language': {'type': 'STRING', 'enum': ['ru', 'en', 'none']}},
+                        'required': ['text', 'language']})), 15)
+            break
+        except Exception as error:
+            if attempt or not temporary_asr_error(error):
+                raise
+            print(f'[ASR] {model}: временная ошибка {getattr(error, "code", "таймаут")}; повтор через1s.', flush=True)
+            await asyncio.sleep(1)
     data = json.loads(response.text or '{}')
     if not isinstance(data, dict) or data.get('language') not in ('ru', 'en', 'none'):
         raise ValueError('ASR format')
