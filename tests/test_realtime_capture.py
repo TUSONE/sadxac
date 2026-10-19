@@ -83,6 +83,7 @@ class FeedbackTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(agent.os.environ, {}, clear=True), patch.object(agent, 'MIC_SOURCE', agent.PHYSICAL_MIC_SOURCE):
             self.assertFalse(agent.audio_wake_enabled())
             self.assertNotIn('Определяй обращение по самому входному аудио', agent.system_instruction())
+            self.assertNotIn('wake_assistant', agent.system_instruction())
             with self.assertRaises(RuntimeError):
                 await agent.receiver(FakeSession([[event, message(b'false-reply', turn_complete=True)]]), player, gate, queue)
         self.assertFalse(queue.get_nowait()[1])
