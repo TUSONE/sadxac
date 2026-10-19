@@ -67,6 +67,7 @@ def snapshot():
             report['pulse'][kind] = summarize_nodes(kind, json.loads(raw))
         except (ValueError, TypeError, KeyError):
             report['pulse'][kind] = {'error': 'invalid Pulse JSON'}
+    report['aec_reference'] = reference_routing(report['pulse'])
     path = Path(os.getenv('SLAVIK_MIC_CALIBRATION', str(Path.home() / '.config/slavik/mic-calibration.json')))
     try:
         profile = json.loads(path.read_text())
@@ -75,6 +76,36 @@ def snapshot():
     except (OSError, ValueError, TypeError):
         report['calibration'] = {'error': 'profile unavailable'}
     return report
+
+
+def reference_routing(pulse):
+    """Check actual Pulse routes, not merely that named AEC nodes exist."""
+    kinds = ('sinks', 'sources', 'sink-inputs', 'modules')
+    if any(not isinstance(pulse.get(k), list) for k in kinds):
+        return {'status': 'unknown', 'warnings': ['Не удалось прочитать маршруты Pulse.']}
+    sink = next((s for s in pulse['sinks'] if s.get('name') == 'voice_aec_sink'), None)
+    source = next((s for s in pulse['sources'] if s.get('name') == 'voice_aec_source'), None)
+    monitor = next((s for s in pulse['sources'] if s.get('name') == 'voice_aec_sink.monitor'), None)
+    warnings, streams = [], []
+    if not sink or not source:
+        warnings.append('Нет пары voice_aec_sink / voice_aec_source.')
+    if not monitor:
+        warnings.append('Нет monitor опорного сигнала voice_aec_sink.monitor.')
+    if sink and source and sink.get('owner_module') is not None and source.get('owner_module') is not None and sink['owner_module'] != source['owner_module']:
+        warnings.append('AEC sink и source принадлежат разным модулям.')
+    for stream in pulse['sink-inputs']:
+        props = stream.get('properties') or {}
+        binary = props.get('application.process.binary', '').rsplit('/', 1)[-1]
+        name = props.get('application.name', '')
+        if binary not in ('librespot', 'slavik-librespot', 'pacat') and name not in ('SlavikVoice', 'SlavikSpotify'):
+            continue
+        routed = bool(sink and str(stream.get('sink')) == str(sink['index']))
+        streams.append({'index': stream['index'], 'application': name or binary, 'through_aec': routed})
+        if not routed:
+            warnings.append(f"Поток {stream['index']} ({name or binary}) обходит опору AEC.")
+    return {'status': 'warning' if warnings else 'routing_ok', 'streams': streams,
+            'reference': 'voice_aec_sink.monitor', 'warnings': warnings,
+            'note': 'Маршрутизация не доказывает акустическую эффективность. Нужен AEC-тест с музыкой и речью.'}
 
 
 def print_diagnostics():

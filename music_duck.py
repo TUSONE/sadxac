@@ -57,8 +57,8 @@ class Ducker:
             for key, stream in present.items():
                 if key not in self.saved:
                     original = volumes(stream)
-                    # Pulse volume is cubic: .63 control ~= .25 amplitude (-12 dB).
-                    reduced = [round(v * .63) for v in original]
+                    # Pulse volume is cubic: .8 control ~= .512 amplitude (-5.8 dB).
+                    reduced = [round(v * .8) for v in original]
                     self.saved[key] = original, reduced
                     self.persist()  # journal BEFORE changing Pulse volume
                     self.change(stream['index'], reduced)

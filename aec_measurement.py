@@ -6,6 +6,7 @@ from mic_processing import HighPass, frame_stats, samples, pcm
 
 PHYSICAL_SOURCE = 'alsa_input.platform-sound_i2s.stereo-fallback'
 AEC_SOURCE = 'voice_aec_source'
+REFERENCE_SOURCE = 'voice_aec_sink.monitor'
 
 
 class Levels:
@@ -36,9 +37,9 @@ class Levels:
 
 async def measure(command, stop_process, seconds):
     processes = []
-    levels = [Levels(), Levels()]
+    levels = [Levels(), Levels(), Levels()]
     try:
-        for source in (PHYSICAL_SOURCE, AEC_SOURCE):
+        for source in (PHYSICAL_SOURCE, AEC_SOURCE, REFERENCE_SOURCE):
             processes.append(await asyncio.create_subprocess_exec(
                 *command('capture', source), stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE))
@@ -52,7 +53,7 @@ async def measure(command, stop_process, seconds):
             if frame >= 100:
                 for level, chunk in zip(levels, chunks):
                     level.add(chunk)
-        return dict(zip(('physical', 'aec'), (level.result() for level in levels)))
+        return dict(zip(('physical', 'aec', 'playback_reference'), (level.result() for level in levels)))
     finally:
         for proc in processes:
             await stop_process(proc)
@@ -60,6 +61,9 @@ async def measure(command, stop_process, seconds):
 
 async def run_test(command, stop_process):
     print('AEC-тест без Gemini: аудио не сохраняется. Славик должен быть остановлен.', flush=True)
+    print('Одновременно измеряются физические микрофоны, выход AEC и опора voice_aec_sink.monitor. '
+          'Если музыка слышна, а опора молчит, она не попадает в нужный AEC. '
+          'Наличие опоры само по себе ещё не доказывает подавление эха.', flush=True)
     report = {}
     stages = [
         ('quiet', 'Остановите музыку, молчите. Enter: 8 секунд тишины.', 8),

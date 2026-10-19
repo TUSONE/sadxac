@@ -44,3 +44,29 @@ class DiagnosticTests(unittest.TestCase):
     def test_status_works_when_nothing_is_playing(self):
         with patch.object(s, 'devices', return_value=[]), patch.object(s, 'api', return_value=None):
             self.assertIn('Активное: нет', s.spotify_command({'action': 'status'}))
+
+
+class ReferenceTests(unittest.TestCase):
+    def topology(self, target=12):
+        return {'sinks': [{'index': 12, 'name': 'voice_aec_sink', 'owner_module': 7}],
+                'sources': [{'name': 'voice_aec_source', 'owner_module': 7}, {'name': 'voice_aec_sink.monitor'}],
+                'modules': [],
+                'sink-inputs': [{'index': 30, 'sink': target, 'properties': {'application.name': 'SlavikVoice'}},
+                                {'index': 31, 'sink': target, 'properties': {'application.process.binary': '/usr/bin/librespot'}}]}
+
+    def test_both_music_and_voice_must_feed_reference(self):
+        good = d.reference_routing(self.topology())
+        self.assertEqual(good['status'], 'routing_ok')
+        self.assertTrue(all(s['through_aec'] for s in good['streams']))
+        bad = self.topology()
+        bad['sink-inputs'][1]['sink'] = 99
+        result = d.reference_routing(bad)
+        self.assertEqual(result['status'], 'warning')
+        self.assertIn('обходит', result['warnings'][0])
+
+    def test_missing_monitor_or_split_aec_is_reported(self):
+        topology = self.topology()
+        topology['sources'] = [{'name': 'voice_aec_source', 'owner_module': 8}]
+        result = d.reference_routing(topology)
+        self.assertEqual(len(result['warnings']), 2)
+        self.assertEqual(d.reference_routing({})['status'], 'unknown')

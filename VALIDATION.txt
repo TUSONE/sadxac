@@ -1,3 +1,12 @@
+2026-10-19: listening/reference/search revision
+134 unittest tests passed in cloud: bare-name silence and 3s deadline, duck on/off,
+address-free local barge-in, stale generation suppression, whole-word echo rejection,
+search429 stable-knowledge fallback, AEC routing fixtures and real three-pipe capture.
+Existing authorized-playback fixtures now use an actual request instead of a bare name.
+No Gemini key or Banana Pi audio hardware here: acoustic cancellation, loud music,
+real model adherence/meme knowledge and native Live barge-in latency remain unverified.
+No AEC implementation was replaced. New monitor measurement is diagnostic only.
+
 Dialogue/info/playback update: 128 unit tests cover audible-end3s window, short clarification, addressed barge-in with preserved queued request, >10s PCM and bounded backpressure, TashkentUZ/direct country selection, RSS headlines/dates/sources and search model404 fallback. RSS live check blocked by cloud proxy; Gemini key absent. Actual board acoustics, source access and latency unverified.
 
 Direct Flash Live restored: 115 unittest tests passed. Default uses native Live input/ASR without independent-ASR preflight; CLI --asr-engine live overrides launcher .env. No new dependencies, hardware/output or Spotify backend changes. Acoustic and latency acceptance pending on board. --asr-test remains non-executing diagnostics.

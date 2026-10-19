@@ -226,7 +226,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         fallback = NS(parts=[NS(inline_data=NS(data=b'fallback', mime_type='audio/pcm;rate=24000'))])
         session = FakeSession([
             [message(b'background', turn_complete=True)],
-            [message(b'wake', input_transcription=NS(text='Славик'), model_turn=fallback), message(turn_complete=True)],
+            [message(b'wake', input_transcription=NS(text='Славик привет'), model_turn=fallback), message(turn_complete=True)],
             [message(b'followup'), message(turn_complete=True)]])
         with self.assertRaisesRegex(RuntimeError, 'ended'):
             await a.receiver(session, player, gate)
@@ -236,7 +236,7 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_server_interrupt_does_not_flush_and_same_event_address_is_accepted(self):
         gate = a.WakeGate(wake_enabled=True, followup_enabled=True); player = FakePlayer()
-        session = FakeSession([[message(b'stale', interrupted=True, input_transcription=NS(text='Славик')), message(b'new', turn_complete=True)]])
+        session = FakeSession([[message(b'stale', interrupted=True, input_transcription=NS(text='Славик привет')), message(b'new', turn_complete=True)]])
         with self.assertRaises(RuntimeError): await a.receiver(session, player, gate)
         self.assertEqual(player.flushed, 0)
         self.assertTrue(gate.awake)
@@ -249,14 +249,14 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(player.audio, [])
 
     async def test_fallback_pcm(self):
-        gate = a.WakeGate(wake_enabled=True, followup_enabled=True); gate.feed_transcript('Славик'); player = FakePlayer()
+        gate = a.WakeGate(wake_enabled=True, followup_enabled=True); gate.feed_transcript('Славик привет'); player = FakePlayer()
         part = NS(inline_data=NS(data=b'pcm', mime_type='audio/pcm;rate=48000'))
         session = FakeSession([[message(model_turn=NS(parts=[part]), turn_complete=True)]])
         with self.assertRaises(RuntimeError): await a.receiver(session, player, gate)
         self.assertEqual(player.audio, [(b'pcm', 48000)])
 
     async def test_authorized_reply_survives_wake_timeout(self):
-        gate = a.WakeGate(wake_enabled=True, followup_enabled=True); gate.feed_transcript('Славик'); player = FakePlayer()
+        gate = a.WakeGate(wake_enabled=True, followup_enabled=True); gate.feed_transcript('Славик привет'); player = FakePlayer()
         class Session:
             calls = 0
             async def receive(self):

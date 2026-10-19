@@ -43,7 +43,7 @@ if args[0] == 'capture':
     command = ['/usr/bin/parec', '--raw', '--device=' + args[1], '--format=s16le', '--rate=16000', '--channels=2']
 else:
     command = ['/usr/bin/pacat', '--playback', '--raw', '--device=' + args[1], '--format=s16le',
-               '--rate=48000', '--channels=2', '--latency-msec=120']
+               '--rate=48000', '--channels=2', '--latency-msec=120', '--property=application.name=SlavikVoice']
 child = None
 
 def stop(signum, frame):

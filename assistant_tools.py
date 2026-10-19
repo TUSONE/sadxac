@@ -13,7 +13,7 @@ KNOWLEDGE_DECLARATIONS = [
     {"name": "weather", "description": "Актуальная погода или прогноз Open-Meteo. Город обязателен, если пользователь ещё не указал его и нет города по умолчанию. day=0 сегодня, 1 завтра, до 7.",
      "parameters": {"type": "OBJECT", "properties": {
          "city": {"type": "STRING"}, "country": {"type": "STRING", "description": "Страна/код страны при явном уточнении; Ташкент по умолчанию Узбекистан"}, "day": {"type": "INTEGER"}}}},
-    {"name": "web_search", "description": "Поиск свежих фактов и информации в интернете с источниками: новости, справки, события. Не использовать для управления устройствами.",
+    {"name": "web_search", "description": "Проверка свежих фактов с источниками: новости, события, явная просьба поискать. Для обычных объяснений и известных биографий используй собственные знания, поиск необязателен. Не использовать для управления устройствами.",
      "parameters": {"type": "OBJECT", "properties": {
          "query": {"type": "STRING"}, "kind": {"type": "STRING", "enum": ["news", "web"], "description": "Для свежих новостей news; для общего поиска web"}}, "required": ["query"]}},
 ]
@@ -157,7 +157,9 @@ async def web_search(args):
         code = getattr(error, 'code', None)
         print(f'[Поиск] {type(error).__name__}; код={code or "—"}', flush=True)
         return {'status': 'failed', 'error_code': code,
-                'result': f'Свежую информацию сейчас проверить не удалось; код={code or "сеть/каталог"}. Не выдумывай новости.'}
+                'result': f'Поиск сейчас недоступен; код={code or "сеть/каталог"}.',
+                'knowledge_fallback_allowed': True,
+                'instruction': 'Ответь на общий вопрос из собственных знаний, если знаешь ответ. Ошибка относится только к поиску. Не выдумывай свежие новости, детали мемов и источники. Если вопрос требует актуальных данных, прямо скажи, что их проверить не удалось. Не обещай будущих уведомлений.'}
     finally:
         if client is not None:
             await client.aio.aclose()

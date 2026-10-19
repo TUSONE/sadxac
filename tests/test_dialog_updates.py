@@ -176,3 +176,100 @@ class AliasTests(unittest.TestCase):
             self.assertTrue(agent.contains_wake(text), text)
         for text in ('слова этой песни', 'Слайды покажи', 'обычная беседа о музыке'):
             self.assertFalse(agent.contains_wake(text), text)
+
+
+class ListeningRevisionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_name_only_is_silent_and_opens_exact_three_second_window(self):
+        from test_agent import FakePlayer, FakeSession, message
+        gate, player = agent.WakeGate(), FakePlayer()
+        with patch.object(agent.time, 'monotonic', return_value=100) as clock:
+            with self.assertRaises(RuntimeError):
+                await agent.receiver(FakeSession([[message(b'ack', input_transcription=NS(text='Эй Славка'), turn_complete=True)]]), player, gate)
+            self.assertEqual(player.audio, [])
+            self.assertTrue(gate.waiting_for_command)
+            self.assertFalse(gate.response_allowed)
+            clock.return_value = 102.9
+            gate.feed_transcript('Включи Кизару')
+            self.assertTrue(gate.response_allowed)
+            self.assertFalse(gate.waiting_for_command)
+        with patch.object(agent.time, 'monotonic', return_value=200) as clock:
+            gate = agent.WakeGate()
+            gate.feed_transcript('Славик')
+            clock.return_value = 203
+            self.assertFalse(gate.waiting_for_command)
+            self.assertFalse(gate.response_allowed)
+            gate.feed_transcript('Посторонняя речь')
+            self.assertFalse(gate.response_allowed)
+
+    async def test_barge_in_without_name_in_active_dialogue_but_not_echo(self):
+        from test_agent import FakePlayer, FakeSession, message
+        class Player(FakePlayer):
+            def __init__(self):
+                super().__init__()
+                self.queue = asyncio.Queue()
+                self.audio_until = 0
+                self.history = []
+            async def put(self, data, rate):
+                await super().put(data, rate)
+                self.history.append(data)
+                self.audio_until = 110
+            async def flush(self):
+                await super().flush()
+                self.audio_until = 0
+        player, gate = Player(), agent.WakeGate()
+        session = FakeSession([
+            [message(b'first', input_transcription=NS(text='Славик расскажи теорему'), output_transcription=NS(text='В прямоугольном треугольнике')),
+             message(input_transcription=NS(text='Стоп, лучше поставь музыку')),
+             message(b'stale', turn_complete=True)],
+            [message(b'new', turn_complete=True)]])
+        with patch.object(agent.time, 'monotonic', return_value=100), self.assertRaises(RuntimeError):
+            await agent.receiver(session, player, gate)
+        self.assertEqual(player.flushed, 1)
+        self.assertEqual(player.history, [b'first', b'new'])
+        guard = agent.EchoGuard()
+        guard.remember('В прямоугольном треугольнике')
+        self.assertIsNone(guard.accept('В прямоугольном треугольнике', player, allow_barge_in=True))
+        with patch.object(agent.time, 'monotonic', return_value=100):
+            player.audio_until = 110
+            guard.remember('Привет! Могу рассказать про интернет.')
+            self.assertIsNone(guard.accept('Привет', player, allow_barge_in=True))
+            self.assertIsNone(guard.accept('Могу', player, allow_barge_in=True))
+            # Match complete words, not substrings inside "интернет".
+            self.assertEqual(guard.accept('Нет', player, allow_barge_in=True), 'Нет')
+
+    async def test_name_only_duck_restores_on_timeout_without_a_reply(self):
+        clock_value = 100
+        commands = []
+        proc = NS(returncode=None, stdin=NS(write=commands.append, drain=AsyncMock(), close=lambda: None), wait=AsyncMock())
+        player = NS(queue=asyncio.Queue(), audio_until=0)
+        gate = agent.WakeGate()
+        with patch.object(agent.time, 'monotonic', side_effect=lambda: clock_value):
+            gate.feed_transcript('Славик')
+            ticks = 0
+            async def tick(_):
+                nonlocal clock_value, ticks
+                ticks += 1
+                if ticks == 1:
+                    clock_value = 103.1
+                else:
+                    raise asyncio.CancelledError
+            with patch.dict(agent.os.environ, {'SLAVIK_MUSIC_DUCK': '1', 'SLAVIK_AUDIO_HELPER': '/helper'}), \
+                 patch.object(agent.asyncio, 'create_subprocess_exec', return_value=proc), \
+                 patch.object(agent.asyncio, 'sleep', side_effect=tick):
+                with self.assertRaises(asyncio.CancelledError):
+                    await agent.conversation_focus(gate, player)
+        self.assertEqual(commands, [b'on\n', b'off\n'])
+
+    async def test_search_quota_does_not_forbid_stable_knowledge_or_retry_quota(self):
+        from google import genai
+        error = Exception()
+        error.code = 429
+        client = NS(aio=NS(aclose=AsyncMock()))
+        with patch.object(genai, 'Client', return_value=client), patch.object(tools, 'grounded_search', side_effect=error) as search:
+            result = await tools.web_search({'query': 'Кто такой Молстрой?'})
+        search.assert_awaited_once()
+        self.assertEqual(result['error_code'], 429)
+        self.assertTrue(result['knowledge_fallback_allowed'])
+        self.assertIn('собственных знаний', result['instruction'])
+        self.assertIn('Не выдумывай свежие новости', result['instruction'])
+        client.aio.aclose.assert_awaited_once()

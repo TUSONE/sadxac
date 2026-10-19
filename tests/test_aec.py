@@ -20,7 +20,7 @@ class LevelTests(unittest.TestCase):
 
 
 class CaptureTests(unittest.IsolatedAsyncioTestCase):
-    async def test_two_streams_discard_warmup_and_close(self):
+    async def test_mics_and_playback_reference_discard_warmup_and_close(self):
         import sys
         from aec_measurement import measure
         from gemini_assistant_dialog import stop_process
@@ -29,7 +29,7 @@ class CaptureTests(unittest.IsolatedAsyncioTestCase):
         def command(mode, source):
             self.assertEqual(mode, 'capture')
             sources.append(source)
-            # Warmup has a different amplitude; both actual OS pipes must drain.
+            # Warmup has a different amplitude; all actual OS pipes must drain.
             return [sys.executable, '-c',
                     "import struct,sys; "
                     "quiet=struct.pack('<4h',100,1000,-100,-1000)*160; "
@@ -39,9 +39,9 @@ class CaptureTests(unittest.IsolatedAsyncioTestCase):
             stopped.append(proc)
             await stop_process(proc)
         result = await measure(command, close, 1)
-        self.assertEqual(len(set(sources)), 2)
-        self.assertEqual(len(stopped), 2)
-        for source in ('physical', 'aec'):
+        self.assertEqual(len(set(sources)), 3)
+        self.assertEqual(len(stopped), 3)
+        for source in ('physical', 'aec', 'playback_reference'):
             self.assertGreater(result[source]['right']['rms'], 1900)
             self.assertLess(result[source]['left']['rms'], 210)
             self.assertEqual(result[source]['right']['clipped_percent'], 0)

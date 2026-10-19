@@ -91,7 +91,10 @@ def system_instruction():
         f"до {AWAKE_SECONDS:g} секунд без повторения имени. После бездействия "
         "снова молчи до следующего обращения. Имя может быть в начале, середине "
         "или конце фразы: «Славка, как дела?» и «Как дела, Славка?» одинаково "
-        "обращены к тебе. Дослушай фразу перед ответом. Не начинай разговор сам."
+        "обращены к тебе. Дослушай фразу перед ответом. Не начинай разговор сам. "
+        "Если сказали только имя, молча жди команду три секунды: не отвечай «Что хотел?». "
+        "Во время твоего ответа и три секунды после него пользователь может перебить "
+        "и продолжить без повторения имени. Уступи ему слово, слушай новую просьбу."
         if WAKE_ENABLED else
         "Непрерывный диалог включён. Отвечай на обращённую к тебе речь сразу, "
         "без слова пробуждения и без ограничения окна разговора."
@@ -278,6 +281,13 @@ def contains_wake(text: str) -> bool:
     return False
 
 
+def wake_only(text):
+    """An isolated name opens listening, without authorizing a spoken reply."""
+    words = normalize_text(text).split()
+    return bool(words) and any(contains_wake(w) for w in words) and all(
+        contains_wake(w) or w in ('эй', 'э', 'ау', 'hey', 'эйй') for w in words)
+
+
 class WakeGate:
     def __init__(self, wake_enabled=WAKE_ENABLED, followup_enabled=FOLLOWUP_ENABLED):
         self.wake_enabled = wake_enabled
@@ -286,6 +296,7 @@ class WakeGate:
         self.asr_pending = False
         self.reply_started = False
         self.awaiting_answer = False
+        self.wake_wait_until = 0.0
         if self.followup_enabled and AWAKE_SECONDS <= 0:
             raise ValueError("SLAVIK_AWAKE_SECONDS must be positive")
         self.awake_until = 0.0
@@ -304,7 +315,11 @@ class WakeGate:
     @property
     def response_allowed(self):
         # A listening window alone must not authorize a model-initiated reply.
-        return not self.wake_enabled or self.command_authorized
+        return not self.wake_enabled or (self.command_authorized and not self.waiting_for_command)
+
+    @property
+    def waiting_for_command(self):
+        return time.monotonic() < self.wake_wait_until
 
     def complete_turn(self):
         self.reply_started = False
@@ -316,7 +331,7 @@ class WakeGate:
         self.clear_turn_text()
         self.command_authorized = False
         self.input_authorized = False
-        if not self.followup_enabled:
+        if not self.followup_enabled and not self.waiting_for_command:
             self.awake_until = 0
 
     def extend(self):
@@ -348,11 +363,16 @@ class WakeGate:
             self.duck_pending_until = now + 30
             was_asleep = not self.awake
             self.extend()
+            # Use the full current utterance, including split transcription.
+            self.wake_wait_until = now + 3 if (wake_only(self.last_utterance) or wake_only(self.input_buf)) else 0
+            if self.waiting_for_command:
+                self.command_authorized = False
             self.input_buf = ""
             return was_asleep
         # Name authorizes fragments of this utterance, not the next utterance.
-        self.command_authorized = self.input_authorized or (self.followup_enabled and self.awake)
+        self.command_authorized = self.input_authorized or self.waiting_for_command or (self.followup_enabled and self.awake)
         if self.command_authorized:
+            self.wake_wait_until = 0
             self.addressed = True
             self.duck_pending_until = now + 30
             self.extend()
@@ -363,7 +383,7 @@ class WakeGate:
 
 
 class EchoGuard:
-    """Reject our recent words and require address during playback/echo tail.
+    """Reject recent output; require address outside an active dialogue.
 
     This is a conversational guard, not acoustic echo cancellation. The mic
     keeps streaming and an addressed user can still interrupt.
@@ -391,7 +411,7 @@ class EchoGuard:
         self.output = (self.output + " " + text)[-1500:]
         self.output_at = now
 
-    def accept(self, text, player, allow_short_answer=False):
+    def accept(self, text, player, allow_short_answer=False, allow_barge_in=False):
         now = time.monotonic()
         self.protect_playback(player)
         norm = normalize_text(text)
@@ -404,13 +424,17 @@ class EchoGuard:
             self.candidate = ""
             return text
         overlap = SequenceMatcher(None, words, spoken, autojunk=False).find_longest_match().size
-        echo = (recent and len(norm) >= 6 and
-                (len(words) >= 2 or contains_wake(norm)) and
-                (norm in normalize_text(self.output) or
+        playing = self.playing(player)
+        echo = (recent and (len(norm) >= 6 or (playing and len(norm) >= 3)) and
+                (len(words) >= 2 or contains_wake(norm) or playing) and
+                ((bool(words) and overlap == len(words)) or
                  (overlap >= 2 and overlap / max(1, len(words)) >= .6)))
         if echo:
             self.candidate = ""
             return None
+        if allow_barge_in:
+            self.candidate = ""
+            return text
         if protected:
             if now - self.candidate_at > 2:
                 self.candidate = ""
@@ -598,9 +622,9 @@ async def conversation_focus(gate, player, capture=None):
                 gate.close_when_drained = False
             elif busy:
                 gate.extend()
-            if not gate.response_allowed and not busy:
+            if not gate.response_allowed and not busy and not gate.waiting_for_command:
                 gate.addressed = False
-            active = gate.addressed and (busy or (gate.response_allowed and time.monotonic() < gate.duck_pending_until))
+            active = gate.addressed and (gate.waiting_for_command or busy or (gate.response_allowed and time.monotonic() < gate.duck_pending_until))
             if proc and proc.returncode is not None:
                 print('[Audio] Приглушение недоступно: обновите аудиомост через bash install-linux.sh.', flush=True)
                 proc = None
@@ -658,10 +682,17 @@ async def receiver(session, player, gate, tool_queue=None, verified_asr=False, e
             if sc:
                 inp = getattr(sc, "input_transcription", None)
                 if inp and getattr(inp, "text", None) and not verified_asr:
-                    accepted = echo.accept(inp.text, player, allow_short_answer=gate.awaiting_answer and gate.awake) if gate.wake_enabled else inp.text
+                    accepted = echo.accept(inp.text, player,
+                        allow_short_answer=gate.awaiting_answer and gate.awake,
+                        allow_barge_in=gate.followup_enabled and gate.addressed and gate.awake) if gate.wake_enabled else inp.text
                     if accepted is None:
                         input_rejected = True
                         gate.command_authorized = False
+                        # A detected feedback cycle must not leave an open
+                        # window for its next mistranscribed echo to answer itself.
+                        if not gate.waiting_for_command:
+                            gate.addressed = False
+                            gate.awake_until = 0
                         gate.clear_turn_text()
                         event_log("echo_or_unaddressed_playback", text=inp.text)
                         print(f"[Фон/эхо пропущено] {inp.text}", flush=True)
@@ -670,15 +701,16 @@ async def receiver(session, player, gate, tool_queue=None, verified_asr=False, e
                         print(f"\nТы: {accepted}", flush=True)
                         if gate.feed_transcript(accepted):
                             print("[Славик активирован]", flush=True)
-                        if contains_wake(accepted) and gate.response_allowed and echo.playing(player):
-                            # Only a verified addressed input may cut playback.
+                        if (gate.response_allowed or gate.waiting_for_command) and echo.playing(player):
+                            # A distinct user utterance in an active dialogue may
+                            # interrupt without repeating the name. Echo is rejected above.
                             echo.protect_playback(player)
                             await player.flush()
                             if audible_turn is True:
                                 audible_turn = False
                                 pending_request = gate.last_utterance
                             print('[Перебивание по обращению]', flush=True)
-                        elif pending_request is not None and gate.response_allowed:
+                        elif (pending_request is not None or audible_turn is False) and gate.response_allowed:
                             pending_request = gate.last_utterance
                         if interrupted and gate.response_allowed:
                             audible_turn = None
@@ -692,7 +724,7 @@ async def receiver(session, player, gate, tool_queue=None, verified_asr=False, e
                 # never bypasses the sleeping gate.
                 for call in calls:
                     if (audio_wake_enabled() and not input_rejected and not echo.playing(player) and
-                            time.monotonic() >= echo.tail_until and call.name == "wake_assistant" and
+                            time.monotonic() >= echo.tail_until and not gate.waiting_for_command and call.name == "wake_assistant" and
                             (call.args or {}).get("addressed") is True):
                         gate.addressed = True
                         gate.duck_pending_until = time.monotonic() + 30
@@ -740,7 +772,7 @@ async def receiver(session, player, gate, tool_queue=None, verified_asr=False, e
                 gate.complete_turn()
                 if pending_request is not None:
                     gate.last_utterance = pending_request
-                    gate.command_authorized = True
+                    gate.command_authorized = not wake_only(pending_request)
                     gate.addressed = True
                     gate.duck_pending_until = time.monotonic() + 30
                     gate.extend()
@@ -764,7 +796,10 @@ async def tool_worker(session, queue, spotify, player=None, gate=None):
                 await session.send_tool_response(function_responses=[types.FunctionResponse(
                     id=call.id, name=call.name, response=completed[call.id])])
                 continue
-            if not authorized:
+            wake_wait = call.name == 'wake_assistant' and gate is not None and gate.waiting_for_command
+            if wake_wait:
+                result = {'status': 'waiting', 'result': 'Имя услышано. Молча жди команду три секунды. Не озвучивай подтверждение.'}
+            elif not authorized:
                 result = "Команда отклонена: ассистент спит."
             elif call.name == "wake_assistant":
                 result = ("Обращение принято. Можно ответить и выполнить просьбу пользователя."
@@ -793,7 +828,7 @@ async def tool_worker(session, queue, spotify, player=None, gate=None):
             event_log("tool_result", tool=call.name, id=call.id, result=result)
             # The result belongs to the already-authorized request, even if
             # its listening deadline expired while the network call ran.
-            if gate is not None and authorized:
+            if gate is not None and authorized and not wake_wait:
                 gate.command_authorized = True
             if gate is not None and authorized:
                 gate.awaiting_answer = isinstance(result, dict) and result.get('status') == 'needs_input'
@@ -953,6 +988,22 @@ def assistant_instruction(enable_spotify):
 Проверенная транскрипция текущей реплики имеет приоритет над черновой аудиотранскрипцией.
 Не отвечай на речь вне разрешённой активности.
 Не воспринимай повтор твоей последней фразы как новую просьбу.
+На обычные вопросы «кто такой», объяснения, биографии и известные мемы отвечай
+из собственных знаний. Поиск нужен для свежих событий, проверки спорных деталей
+и явной просьбы поискать. Ошибка поиска НЕ означает, что ты ничего не знаешь.
+При 429/недоступности поиска расскажи известную стабильную часть ответа; если
+свежесть существенна, кратко отдели неподтверждённые новые сведения. Не выдумывай
+факты и происхождение мемов, цитаты, обвинения или источники. Не обещай «обязательно
+расскажу, когда получится»: фонового уведомления у тебя нет.
+Меллстрой / Молстрой / Mellstroy в контексте блогеров — Андрей Бурим,
+русскоязычный стример из Беларуси, известный провокационными трансляциями.
+Пользователю интересны TikTok-мемы про него, включая «маму-птицу» и «село Молочное».
+Это названия из запроса пользователя, а не проверенная история их происхождения.
+Узнавай эти отсылки; если не знаешь конкретный ролик, попроси цитату или контекст,
+а не сочиняй объяснение. Не утверждай, что знаешь все мемы из TikTok.
+Общайся как Славик: живо, по-дружески, со стримерской энергией, короткими репликами
+и уместными мемами. По тону пользователя допустим разговорный мат без оскорблений
+собеседника. Не представляйся Меллстроем, не изображай его реальный голос.
 Для текущей погоды вызывай weather: город из разговора, либо город по умолчанию;
 Ташкент без уточнения страны — Ташкент в Узбекистане.
 Если инструмент просит уточнение, дождись ответа в окне продолжения. Для свежих фактов и поиска в интернете вызывай web_search. Для новостей
