@@ -1,3 +1,18 @@
+2026-10-20: experimental direct WM8960 input and RNNoise classic
+178 unittest tests passed with actual native RNNoise and SpeexDSP libraries (0 skipped).
+RNNoise official xiph/rnnoise v0.1 resolves to cdf196b1e9de2f8ff1003328ebf9a4316477429d;
+classic no-argument create ABI tested. Local source builder pins commit, rejects modified/
+untracked source, tests produced library before atomic install, saves BSD license/provenance.
+Native tests: sample counts/chunk continuity/440Hz pitch, finite PCM/clipping, silence,
+close safety, bounded speech-probability gain/no noise boost; foreign source calibration
+not applied, channel/gain CLI overrides, raw-mode named barge-in, stereo mic diagnostic.
+Synthetic noise RMS289→1.7, 4s processed in0.216s on cloud x86. Full input DSP gain2
++RNNoise: avg2.507ms/40ms, max3.346ms (100 blocks, cloud only). Not ARM measurements,
+not speech intelligibility/recognition evidence. Without native libraries6 tests skip.
+No board audio was recorded; real music separation, echo, latency, Gemini responses and
+ARMv7 load remain unverified. Physical mode bypasses mic AEC only, module/output retained.
+User confirms quiet hearing is better than with music; cause remains unproven.
+
 2026-10-20 Asia/Tashkent: short memes / command listen hold / optional native NS+AGC
 169 unittest tests passed with real SpeexDSP (0 skipped): actual C noise reduction,
 PCM duration/frame continuity/close safety, ABI target/max-gain controls, fixed-point

@@ -18,6 +18,7 @@ from array import array
 
 MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-live-preview")
 MIC_SOURCE = os.getenv("GEMINI_MIC_SOURCE", "voice_aec_source")
+PHYSICAL_MIC_SOURCE = 'alsa_input.platform-sound_i2s.stereo-fallback'
 SPEAKER_SINK = os.getenv("GEMINI_SPEAKER_SINK", "voice_aec_sink")
 VOICE = os.getenv("GEMINI_VOICE", "Kore")
 
@@ -744,7 +745,7 @@ async def receiver(session, player, gate, tool_queue=None, verified_asr=False, e
                 if inp and getattr(inp, "text", None) and not verified_asr:
                     accepted = echo.accept(inp.text, player,
                         allow_short_answer=gate.awaiting_answer and gate.awake,
-                        allow_barge_in=gate.followup_enabled and gate.addressed and gate.awake) if gate.wake_enabled else inp.text
+                        allow_barge_in=gate.followup_enabled and gate.addressed and gate.awake and MIC_SOURCE != PHYSICAL_MIC_SOURCE) if gate.wake_enabled else inp.text
                     if accepted is None:
                         input_rejected = True
                         gate.command_authorized = False
@@ -974,6 +975,8 @@ async def run():
                   "[ASR] Встроенное распознавание Live.", flush=True)
             print("[Громкость] Голос: 40%; обычные команды громкости управляют музыкой.", flush=True)
             print(f"Mic={MIC_SOURCE}: 16k stereo -> channel {capture.channel} mono; Out={SPEAKER_SINK}: 24k mono -> 48k stereo", flush=True)
+            if MIC_SOURCE == PHYSICAL_MIC_SOURCE:
+                print(f'[Mic] Прямой WM8960, AEC на входе обойдён. Во время озвучки перебивание по имени; окно продолжения {AWAKE_SECONDS:g}s.', flush=True)
             async with asyncio.TaskGroup() as tg:
                 if use_asr:
                     from speech_recognition import microphone_pipeline, recognition_worker
@@ -1173,18 +1176,32 @@ async def diagnostic(mode):
         capture.channel = processor.channel
         try:
             await capture.start()
+            print('[Mic-test] Говорите с рабочего расстояния. L/R — уровни обоих каналов до DSP; аудио не сохраняется.', flush=True)
             for _ in range(10):
-                raw = b"".join([await asyncio.wait_for(capture.read_mono(), 3) for _ in range(12)])
                 from mic_processing import samples
-                original = samples(raw)
-                processed = samples(processor.process(raw))
+                stereo, outputs = [], []
+                for _ in range(12):
+                    raw = await asyncio.wait_for(capture.read_stereo(), 3)
+                    stereo.extend(samples(raw))
+                    outputs.extend(samples(processor.process(stereo_to_mono_channel(raw, processor.channel))))
+                levels = []
+                for channel in (0, 1):
+                    values = stereo[channel::2]
+                    mean = sum(values) / len(values)
+                    levels.append(math.sqrt(sum((v-mean)**2 for v in values) / len(values)))
+                original = stereo[processor.channel::2]
                 raw_peak = max(abs(x) for x in original)
                 raw_clips = sum(abs(x) >= 32760 for x in original)
-                rms = math.sqrt(sum(x*x for x in processed) / len(processed))
-                print(f"Mic channel {processor.channel}: raw_peak={raw_peak}, raw_clipped={raw_clips}/{len(original)}, "
-                      f"processed_RMS={rms:.1f}, limiter_frames={processor.limited_frames}", flush=True)
+                rms = math.sqrt(sum(x*x for x in outputs) / len(outputs))
+                average = 1000 * processor.processing_seconds * INPUT_FRAMES / max(1, processor.processed_samples)
+                print(f"Mic channel {processor.channel}: L_RMS={levels[0]:.1f} R_RMS={levels[1]:.1f}, "
+                      f"raw_peak={raw_peak}, raw_clipped={raw_clips}/{len(original)}, "
+                      f"processed_RMS={rms:.1f}, DSP_avg={average:.2f}ms/40ms "
+                      f"DSP_max={processor.max_processing_ms:.2f}ms, limiter_frames={processor.limited_frames}", flush=True)
         finally:
             await capture.close()
+            if processor.enhancer:
+                processor.enhancer.close()
 
 
 
@@ -1252,7 +1269,8 @@ async def record_mic(output_dir=None, seconds=12):
     try:
         with ExitStack() as stack:
             writers = []
-            for name in ('aec-before-dsp.wav', 'sent-to-gemini.wav', 'physical-stereo.wav'):
+            before = 'physical-before-dsp.wav' if MIC_SOURCE == PHYSICAL_MIC_SOURCE else 'aec-before-dsp.wav'
+            for name in (before, 'sent-to-gemini.wav', 'physical-stereo.wav'):
                 handle = stack.enter_context(os.fdopen(os.open(folder / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'wb'))
                 writer = stack.enter_context(wave.open(handle, 'wb'))
                 writer.setnchannels(2 if name == "physical-stereo.wav" else 1)
@@ -1341,13 +1359,16 @@ async def entry(args):
 
 
 def main():
-    global AWAKE_SECONDS, FOLLOWUP_ENABLED
+    global AWAKE_SECONDS, FOLLOWUP_ENABLED, MIC_SOURCE
     parser = argparse.ArgumentParser()
     parser.add_argument('--followup-seconds', type=float, default=None, help='Окно продолжения после ответа; по умолчанию3s, 0 — только с именем')
     parser.add_argument('--asr-engine', choices=('live', 'gemini'),
                         help='live: прямой Flash Live; gemini: отдельный экспериментальный ASR')
-    parser.add_argument('--mic-enhancement', choices=('off', 'speex'),
-                        help='Опытный шумодав/AGC после AEC; off для сравнения без него')
+    parser.add_argument('--mic-enhancement', choices=('off', 'speex', 'rnnoise'),
+                        help='Опытный шумодав: speex или нейросетевой rnnoise; off для чистого сравнения')
+    parser.add_argument('--mic-source', choices=('aec', 'physical'), help='Источник: AEC либо прямой WM8960 без AEC на входе')
+    parser.add_argument('--mic-channel', choices=('left', 'right'), help='Явно выбрать один из двух микрофонов')
+    parser.add_argument('--mic-gain', type=float, help='Явный программный gain0.25..4 вместо старой калибровки')
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--asr-test", action="store_true")
     modes.add_argument("--weather", nargs="?", const="", metavar="CITY")
@@ -1363,6 +1384,15 @@ def main():
     modes.add_argument("--spotify-previous", action="store_true")
     modes.add_argument("--spotify-playlist-track", type=int, metavar="NUMBER")
     args = parser.parse_args()
+    if args.mic_source:
+        MIC_SOURCE = PHYSICAL_MIC_SOURCE if args.mic_source == 'physical' else 'voice_aec_source'
+        os.environ['GEMINI_MIC_SOURCE'] = MIC_SOURCE
+    if args.mic_channel:
+        os.environ['SLAVIK_MIC_CHANNEL'] = '0' if args.mic_channel == 'left' else '1'
+    if args.mic_gain is not None:
+        if not math.isfinite(args.mic_gain) or not .25 <= args.mic_gain <= 4:
+            parser.error('--mic-gain: допустимо0.25..4')
+        os.environ['SLAVIK_MIC_GAIN'] = str(args.mic_gain)
     if args.mic_enhancement is not None:
         os.environ['SLAVIK_MIC_ENHANCEMENT'] = args.mic_enhancement
     if args.followup_seconds is not None:

@@ -4,6 +4,7 @@ import math
 import os
 import sys
 import tempfile
+import time
 from array import array
 from pathlib import Path
 
@@ -53,15 +54,24 @@ class InputProcessor:
         self.highpass = HighPass()
         self.limited_frames = 0
         self.enhancer = None
+        self.processed_samples = 0
+        self.processing_seconds = 0.0
+        self.max_processing_ms = 0.0
 
     def process(self, raw):
+        started = time.perf_counter()
         values = self.highpass.filter(samples(raw))
         peak = max((abs(x) for x in values), default=0)
         gain = min(self.gain, 30000 / max(peak, 1))
         if gain < self.gain:
             self.limited_frames += 1
         output = pcm(max(-32768, min(32767, round(x * gain))) for x in values)
-        return self.enhancer.process(output) if self.enhancer else output
+        result = self.enhancer.process(output) if self.enhancer else output
+        elapsed = time.perf_counter() - started
+        self.processing_seconds += elapsed
+        self.processed_samples += len(raw) // 2
+        self.max_processing_ms = max(self.max_processing_ms, 1000 * elapsed)
+        return result
 
 
 def frame_stats(raw, filter_):
@@ -134,8 +144,15 @@ def save_profile(profile, path=DEFAULT_PATH):
 
 def enhance_processor(processor):
     mode = os.getenv('SLAVIK_MIC_ENHANCEMENT', 'off')
-    if mode not in ('off', 'speex'):
-        raise RuntimeError('SLAVIK_MIC_ENHANCEMENT: off или speex.')
+    if mode not in ('off', 'speex', 'rnnoise'):
+        raise RuntimeError('SLAVIK_MIC_ENHANCEMENT: off, speex или rnnoise.')
+    if mode == 'rnnoise':
+        from rnnoise_processing import RNNoiseEnhancer
+        try:
+            processor.enhancer = RNNoiseEnhancer()
+        except OSError:
+            raise RuntimeError('RNNoise/ресемплер не установлен: bash install-linux.sh, затем python3 build-rnnoise.py.') from None
+        print('[Mic] RNNoise classic: нейросетевой шумодав, ограниченное автоусиление до4x; кадр10ms.', flush=True)
     if mode == 'speex':
         from audio_enhancement import SpeexEnhancer
         try:
@@ -143,26 +160,34 @@ def enhance_processor(processor):
         except OSError:
             raise RuntimeError('SpeexDSP не установлен. Выполните bash install-linux.sh или выберите --mic-enhancement off.') from None
         agc = 'AGC до +12dB' if processor.enhancer.agc_enabled else 'AGC недоступен в этой сборке'
-        print(f'[Mic] SpeexDSP после AEC: шумодав -15dB, {agc}, кадр20ms.', flush=True)
+        print(f'[Mic] SpeexDSP: шумодав -15dB, {agc}, кадр20ms.', flush=True)
     return processor
 
 
 def load_processor(source):
     override = os.getenv('SLAVIK_MIC_GAIN')
     path = Path(os.getenv('SLAVIK_MIC_CALIBRATION', str(DEFAULT_PATH)))
-    if not path.exists():
-        print('[Mic] Нет калибровки: gain=1, high-pass=60Hz. Запустите --calibrate-mic.', flush=True)
-        return enhance_processor(InputProcessor(float(override) if override else 1.0))
+    channel_override = os.getenv('SLAVIK_MIC_CHANNEL')
+    if channel_override is not None and channel_override not in ('0', '1'):
+        raise RuntimeError('SLAVIK_MIC_CHANNEL: 0 (левый) или 1 (правый).')
+    gain, channel, snr = 1.0, CHANNEL, '?'
     try:
         profile = json.loads(path.read_text())
         if (profile['schema'], profile['source'], profile['rate']) != (SCHEMA, source, RATE) or type(profile['channel']) is not int or profile['channel'] not in (0, 1):
             raise ValueError('Calibration device/format mismatch')
-        processor = InputProcessor(float(override or profile['gain']))
-        processor.channel = profile['channel']
+        gain, channel, snr = float(profile['gain']), profile['channel'], profile.get('snr_db', '?')
+        if not math.isfinite(gain) or not .25 <= gain <= 4:
+            raise ValueError('Invalid saved gain')
     except (KeyError, ValueError, TypeError, OSError):
-        print('[Mic] Профиль не подходит: gain=1. Повторите --calibrate-mic.', flush=True)
-        return enhance_processor(InputProcessor(float(override) if override else 1.0))
-    print(f"[Mic] channel={processor.channel}, gain={processor.gain:g}, SNR={profile.get('snr_db', '?')}dB, high-pass=60Hz", flush=True)
+        gain, channel, snr = 1.0, CHANNEL, '?'
+        print('[Mic] Калибровки этого источника нет: gain=1; чужой профиль не применяется.', flush=True)
+    if channel_override is not None:
+        if int(channel_override) != channel and override is None:
+            gain, snr = 1.0, '?'
+        channel = int(channel_override)
+    processor = InputProcessor(float(override) if override is not None else gain)
+    processor.channel = channel
+    print(f'[Mic] source={source}, channel={channel}, gain={processor.gain:g}, SNR={snr}dB, high-pass=60Hz', flush=True)
     return enhance_processor(processor)
 
 
